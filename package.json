@@ -1,6 +1,6 @@
 {
   "name": "dsh-del-chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Adds a “Delete conversation” item to the DSH Session header menu that permanently removes an archived Session's JSONL log, projection cache and Workspace record from disk.",
   "license": "MIT",

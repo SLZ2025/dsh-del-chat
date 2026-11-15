@@ -51,9 +51,18 @@ DSH bundle whose patch inserts one row:
       name: dsh-del-chat
 ```
 
-For a local checkout, point the installer at this directory instead of the package
-name (e.g. `plugin_manager install_bundle` with the absolute path). The Host half
-activates immediately; **refresh the Web page** so the client half loads.
+Install straight from this repository — the bundle is not on npm:
+
+```bash
+dsh plugin add git+https://github.com/SLZ2025/dsh-del-chat.git
+```
+
+Add `#<commit>` to pin a revision. A local checkout installs the same way:
+`dsh plugin add D:\path\to\dsh-del-chat`.
+
+Either way, **quit DSH completely and start it again** afterwards. A page refresh
+loads only the client half: the menu item shows up, but the Host routes stay
+unregistered and the dialog says the Host half is not loaded.
 
 ## Usage
 
@@ -88,9 +97,12 @@ under the persistence root, then detaches, unarchives and deletes.
 
 ## Troubleshooting
 
-* **The item is missing** — refresh the page; the plugin's client half injects
-  `@deepseek-ai/dsh-client-ui-workspace`, and the menu only renders on the
-  Session header of an open Session.
+* **The item is missing** — restart DSH rather than refreshing: the client half
+  injects `@deepseek-ai/dsh-client-ui-workspace`, and the menu only renders on
+  the Session header of an open Session.
+* **"The Host half of this plugin is not loaded"** — the plugin is installed but
+  the running DSH process predates it. Quit the app completely and start it
+  again; `<profile>\dsh-del-chat.log` should then contain `[apply]`.
 * **"Only archived Sessions can be deleted permanently"** — archive it first;
   that prerequisite is deliberate.
 * **`log-locked` (`423`)** — the log is still open in another process. Restart DSH

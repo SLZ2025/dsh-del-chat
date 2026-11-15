@@ -67,7 +67,7 @@ Session header "…" menu
 
 - **Irreversible.** There is no trash: once deleted, the Session cannot be
   restored, and `workspace.json` is not backed up by this plugin.
-- The sidebar row may linger until the next start or page refresh — the registry
+- The sidebar row may linger until the next start — the registry
   index is rebuilt from disk at startup.
 - If the log was already removed outside DSH, `/purge` only finishes the
   registry bookkeeping (`removed: ['registry-only']`) and clears the stale

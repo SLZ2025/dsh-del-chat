@@ -46,8 +46,17 @@
       name: dsh-del-chat
 ```
 
-本地开发时把安装目标指向本目录（`install_bundle` 的绝对路径），不要直接写包名。
-Host 部分会立即生效；**刷新一次网页**让客户端部分加载。
+直接从本仓库安装（还没有发布到 npm）：
+
+```bash
+dsh plugin add git+https://github.com/SLZ2025/dsh-del-chat.git
+```
+
+加 `#<commit>` 可以锁定具体提交。本地 checkout 也一样：
+`dsh plugin add D:\path\to\dsh-del-chat`。
+
+装完必须**完全退出 DSH 再重新启动**。刷新网页只会加载客户端部分：菜单项会冒出来，
+但 Host 端路由并没有注册，点下去会提示 Host 端未加载。
 
 ## 使用
 
