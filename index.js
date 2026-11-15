@@ -47,7 +47,6 @@ function logLine(line) {
 }
 
 export const name = 'dsh-del-chat'
-export const inject = ['webServer']
 
 logLine('[module] imported ' + String(import.meta.url))
 
@@ -69,16 +68,21 @@ const JSON_HEADERS = Object.freeze({
  * @param ctx - Host context carrying the web server.
  */
 export function apply(ctx) {
+  const server = ctx.webServer ?? (typeof ctx.get === 'function' ? ctx.get('webServer') : undefined)
   logLine(
     '[apply] start name=' + name
-      + ' hasWebServer=' + typeof ctx.webServer
+      + ' webServer=' + typeof server
       + ' profileDir=' + String(process.env.DSH_PROFILE_DIR)
       + ' home=' + String(process.env.DSH_HOME),
   )
+  if (!server || typeof server.register !== 'function') {
+    logLine('[apply] no webServer on this context')
+    return
+  }
   for (const action of ROUTES) {
     const path = PREFIX + action
     try {
-      const dispose = ctx.webServer.register({
+      const dispose = server.register({
         kind: 'exact',
         path,
         handler: (request, response) => {

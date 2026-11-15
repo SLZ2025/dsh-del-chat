@@ -35,7 +35,7 @@ for (const entry of Object.values(manifest.exports)) {
 
 const host = await import('../index.js')
 assert.equal(host.name, 'dsh-del-chat')
-assert.deepEqual(host.inject, ['webServer'])
+assert.equal(host.inject, undefined, 'the plugin reaches webServer off its own context')
 assert.equal(typeof host.apply, 'function')
 
 const core = await import('../purge-core.js')
