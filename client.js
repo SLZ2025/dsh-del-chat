@@ -36,6 +36,8 @@ window.__ModuleLoader__.load({
         doneWith: (size) => `已删除，释放 ${size}。`,
         failed: '删除失败',
         unknown: '未知错误',
+        hostMissing:
+          'Host 端插件还没加载，所以没有可调用的删除接口。请完全退出 DSH 再启动一次（刷新页面不够），然后重试。',
         bytes: '日志占用',
         cache: '投影缓存',
         session: '会话',
@@ -67,6 +69,8 @@ window.__ModuleLoader__.load({
         doneWith: (size) => `Deleted, ${size} freed.`,
         failed: 'Delete failed',
         unknown: 'unknown error',
+        hostMissing:
+          'The Host half of this plugin is not loaded, so there is no delete route to call. Quit DSH completely and start it again (a page refresh is not enough), then retry.',
         bytes: 'Log size',
         cache: 'Projection cache',
         session: 'Session',
@@ -207,6 +211,16 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * A missing Host half answers with the web shell's own 404 (HTML), not with a
+     * plugin error body; that is a deployment problem, not a failed delete.
+     */
+    function routeMissing(response) {
+      if (!response || response.status === 404) return true;
+      const type = (response.headers && response.headers.get('content-type')) || '';
+      return !type.includes('json');
+    }
+
     function errorText(payload) {
       const code = payload && typeof payload.error === 'string' ? payload.error : '';
       if (code in ERROR_TEXT) return ERROR_TEXT[code];
@@ -249,7 +263,7 @@ window.__ModuleLoader__.load({
           const payload = await readJson(response);
           if (!response.ok || payload === null) {
             if (state.sessionId === sessionId) {
-              set({ phase: 'error', error: errorText(payload) });
+              set({ phase: 'error', error: routeMissing(response) ? TEXT.hostMissing : errorText(payload) });
             }
             return;
           }
@@ -287,7 +301,7 @@ window.__ModuleLoader__.load({
             });
             const payload = await readJson(response);
             if (!response.ok) {
-              if (state.sessionId === sessionId) set({ phase: 'error', error: errorText(payload) });
+              if (state.sessionId === sessionId) set({ phase: 'error', error: routeMissing(response) ? TEXT.hostMissing : errorText(payload) });
               return;
             }
             if (state.sessionId === sessionId) {

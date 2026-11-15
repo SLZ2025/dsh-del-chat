@@ -18,7 +18,7 @@
  * content addressed and shared between sessions and are therefore never
  * touched.
  */
-import { existsSync } from 'node:fs'
+import { appendFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
   measureDirectory,
@@ -26,6 +26,19 @@ import {
   removeSessionArtifacts,
   sessionDirOf,
 } from './purge-core.js'
+
+const LOG_PATH = join(
+  process.env.DSH_PROFILE_DIR ?? join(process.env.DSH_HOME ?? '', 'profiles', 'desktop'),
+  'dsh-del-chat.log',
+)
+
+function logLine(line) {
+  try {
+    appendFileSync(LOG_PATH, new Date().toISOString() + ' ' + line + '\n')
+  } catch {
+    // Logging must never break the plugin.
+  }
+}
 
 export const name = 'dsh-del-chat'
 export const inject = ['webServer']
@@ -43,6 +56,7 @@ const JSON_HEADERS = Object.freeze({
  * @param ctx - Host context carrying the web server.
  */
 export function apply(ctx) {
+  logLine('[apply] routes registered at ' + PREFIX)
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX,
@@ -52,6 +66,7 @@ export function apply(ctx) {
 
 async function handle(ctx, request) {
   const action = new URL(request.url).pathname.slice(PREFIX.length)
+  logLine('[hit] ' + request.method + ' ' + action)
   try {
     if (action === 'status') return await respondStatus(ctx, request)
     if (action === 'purge') return await respondPurge(ctx, request)
