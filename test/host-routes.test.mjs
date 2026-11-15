@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import test from 'node:test'
 
 import { apply } from '../index.js'
 
 const SESSION_ID = 'session-aaaa'
+const PREFIX = '/plugin/dsh-del-chat/'
 
 /** A Host context stub with just the seam this plugin touches. */
 function harness({ archived = [SESSION_ID], dir = true } = {}) {
@@ -73,9 +75,6 @@ function harness({ archived = [SESSION_ID], dir = true } = {}) {
     sessionDir,
     projCacheFile: join(projCacheRoot, `${SESSION_ID}.json`),
     calls,
-    handler: calls.routes[0].resource,
-    prefix: calls.routes[0].path,
-    kind: calls.routes[0].kind,
     restore: () => {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
@@ -83,14 +82,53 @@ function harness({ archived = [SESSION_ID], dir = true } = {}) {
   }
 }
 
-const base = 'http://dsh.test/plugin/dsh-del-chat/'
+/**
+ * Drive one registered node `handler` route the way the Host web server does and
+ * collect the response it writes.
+ */
+function call(h, action, { method = 'GET', body, search = '' } = {}) {
+  const spec = h.calls.routes.find((route) => route.path === PREFIX + action)
+  assert.ok(spec, `no route registered for ${PREFIX}${action}`)
+  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
+  const request = Readable.from(chunks)
+  request.method = method
+  request.url = PREFIX + action + search
+  request.headers = { 'content-type': 'application/json' }
 
-test('registers one prefix route', () => {
+  let settle
+  const done = new Promise((resolve) => {
+    settle = resolve
+  })
+  const response = {
+    statusCode: 0,
+    headers: {},
+    text: '',
+    writeHead(status, headers) {
+      this.statusCode = status
+      this.headers = headers ?? {}
+    },
+    end(chunk) {
+      this.text = chunk === undefined ? '' : String(chunk)
+      settle(this)
+      return this
+    },
+  }
+  spec.handler(request, response)
+  return done
+}
+
+const readJson = (response) => JSON.parse(response.text)
+
+test('registers one exact handler route per action', () => {
   const h = harness()
   try {
-    assert.equal(h.kind, 'prefix')
-    assert.equal(h.prefix, '/plugin/dsh-del-chat/')
-    assert.equal(typeof h.handler, 'function')
+    assert.deepEqual(
+      h.calls.routes.map((route) => [route.kind, route.path, typeof route.handler]),
+      [
+        ['exact', `${PREFIX}status`, 'function'],
+        ['exact', `${PREFIX}purge`, 'function'],
+      ],
+    )
   } finally {
     h.restore()
   }
@@ -99,10 +137,15 @@ test('registers one prefix route', () => {
 test('status reports archived facts without touching disk', async () => {
   const h = harness()
   try {
-    const response = await h.handler(new Request(`${base}status?sessionId=${SESSION_ID}`))
-    const body = await response.json()
-    assert.equal(response.status, 200)
-    assert.deepEqual(body, { sessionId: SESSION_ID, archived: true, exists: true, bytes: 2048, projCache: true })
+    const response = await call(h, 'status', { search: `?sessionId=${SESSION_ID}` })
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(readJson(response), {
+      sessionId: SESSION_ID,
+      archived: true,
+      exists: true,
+      bytes: 2048,
+      projCache: true,
+    })
     assert.equal(existsSync(h.sessionDir), true)
   } finally {
     h.restore()
@@ -112,9 +155,9 @@ test('status reports archived facts without touching disk', async () => {
 test('status rejects a malformed session id', async () => {
   const h = harness()
   try {
-    const response = await h.handler(new Request(`${base}status?sessionId=../etc`))
-    assert.equal(response.status, 400)
-    assert.equal((await response.json()).error, 'invalid-session-id')
+    const response = await call(h, 'status', { search: '?sessionId=../etc' })
+    assert.equal(response.statusCode, 400)
+    assert.equal(readJson(response).error, 'invalid-session-id')
   } finally {
     h.restore()
   }
@@ -123,11 +166,9 @@ test('status rejects a malformed session id', async () => {
 test('purge refuses a session that was never archived', async () => {
   const h = harness({ archived: [] })
   try {
-    const response = await h.handler(
-      new Request(`${base}purge`, { method: 'POST', body: JSON.stringify({ sessionId: SESSION_ID }) }),
-    )
-    assert.equal(response.status, 409)
-    assert.equal((await response.json()).error, 'not-archived')
+    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
+    assert.equal(response.statusCode, 409)
+    assert.equal(readJson(response).error, 'not-archived')
     assert.equal(existsSync(h.sessionDir), true)
     assert.deepEqual(h.calls.detach, [])
   } finally {
@@ -138,11 +179,9 @@ test('purge refuses a session that was never archived', async () => {
 test('purge settles the registry then deletes the slot and its projection cache', async () => {
   const h = harness()
   try {
-    const response = await h.handler(
-      new Request(`${base}purge`, { method: 'POST', body: JSON.stringify({ sessionId: SESSION_ID }) }),
-    )
-    const body = await response.json()
-    assert.equal(response.status, 200)
+    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
+    const body = readJson(response)
+    assert.equal(response.statusCode, 200)
     assert.equal(body.ok, true)
     assert.equal(body.bytes, 2048)
     assert.deepEqual(body.removed, ['session-log', 'projection-cache'])
@@ -158,11 +197,9 @@ test('purge settles the registry then deletes the slot and its projection cache'
 test('purge on a session whose log is already gone only settles the registry', async () => {
   const h = harness({ dir: false })
   try {
-    const response = await h.handler(
-      new Request(`${base}purge`, { method: 'POST', body: JSON.stringify({ sessionId: SESSION_ID }) }),
-    )
-    const body = await response.json()
-    assert.equal(response.status, 200)
+    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
+    const body = readJson(response)
+    assert.equal(response.statusCode, 200)
     assert.deepEqual(body.removed, ['registry-only'])
     assert.deepEqual(h.calls.unarchive, [SESSION_ID])
   } finally {
@@ -170,13 +207,12 @@ test('purge on a session whose log is already gone only settles the registry', a
   }
 })
 
-test('purge rejects GET and unknown actions', async () => {
+test('purge rejects GET', async () => {
   const h = harness()
   try {
-    const wrongMethod = await h.handler(new Request(`${base}purge?sessionId=${SESSION_ID}`))
-    assert.equal(wrongMethod.status, 405)
-    const missing = await h.handler(new Request(`${base}nope`))
-    assert.equal(missing.status, 404)
+    const response = await call(h, 'purge', { search: `?sessionId=${SESSION_ID}` })
+    assert.equal(response.statusCode, 405)
+    assert.equal(readJson(response).error, 'method-not-allowed')
   } finally {
     h.restore()
   }

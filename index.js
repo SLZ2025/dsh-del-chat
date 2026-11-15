@@ -19,6 +19,7 @@
  * touched.
  */
 import { appendFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   measureDirectory,
@@ -27,23 +28,31 @@ import {
   sessionDirOf,
 } from './purge-core.js'
 
-const LOG_PATH = join(
-  process.env.DSH_PROFILE_DIR ?? join(process.env.DSH_HOME ?? '', 'profiles', 'desktop'),
-  'dsh-del-chat.log',
-)
+const LOG_CANDIDATES = [
+  process.env.DSH_PROFILE_DIR && join(process.env.DSH_PROFILE_DIR, 'dsh-del-chat.log'),
+  process.env.DSH_HOME && join(process.env.DSH_HOME, 'dsh-del-chat.log'),
+  join(tmpdir(), 'dsh-del-chat.log'),
+].filter(Boolean)
 
 function logLine(line) {
-  try {
-    appendFileSync(LOG_PATH, new Date().toISOString() + ' ' + line + '\n')
-  } catch {
-    // Logging must never break the plugin.
+  const text = new Date().toISOString() + ' ' + line + '\n'
+  for (const target of LOG_CANDIDATES) {
+    try {
+      appendFileSync(target, text)
+      return
+    } catch {
+      // Try the next candidate: logging must never break the plugin.
+    }
   }
 }
 
 export const name = 'dsh-del-chat'
 export const inject = ['webServer']
 
+logLine('[module] imported ' + String(import.meta.url))
+
 const PREFIX = '/plugin/dsh-del-chat/'
+const ROUTES = Object.freeze(['status', 'purge'])
 const MAX_REQUEST_BYTES = 8_192
 const SESSION_ID = /^session-[0-9a-zA-Z._-]{1,128}$/
 const JSON_HEADERS = Object.freeze({
@@ -53,27 +62,91 @@ const JSON_HEADERS = Object.freeze({
 
 /**
  * Register the confirmation-dialog facts route and the purge route.
+ *
+ * Plain `exact` routes with a node `handler`, matching the route shape the
+ * in-tree optional plugins use: resource routes answer GET/HEAD only, while the
+ * purge call has to POST a body.
  * @param ctx - Host context carrying the web server.
  */
 export function apply(ctx) {
-  logLine('[apply] routes registered at ' + PREFIX)
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'prefix',
-    path: PREFIX,
-    resource: request => handle(ctx, request),
-  }), 'dsh-del-chat: routes')
+  logLine(
+    '[apply] start name=' + name
+      + ' hasWebServer=' + typeof ctx.webServer
+      + ' profileDir=' + String(process.env.DSH_PROFILE_DIR)
+      + ' home=' + String(process.env.DSH_HOME),
+  )
+  for (const action of ROUTES) {
+    const path = PREFIX + action
+    try {
+      const dispose = ctx.webServer.register({
+        kind: 'exact',
+        path,
+        handler: (request, response) => {
+          void serve(ctx, action, request, response)
+        },
+      })
+      logLine('[apply] route registered ' + path)
+      ctx.effect(() => dispose, 'dsh-del-chat: ' + action)
+    } catch (error) {
+      logLine('[apply] route failed ' + path + ': ' + describe(error))
+      throw error
+    }
+  }
+  logLine('[apply] done')
 }
 
-async function handle(ctx, request) {
-  const action = new URL(request.url).pathname.slice(PREFIX.length)
+/** Bridge one node request/response pair onto the Web handler. */
+async function serve(ctx, action, request, response) {
   logLine('[hit] ' + request.method + ' ' + action)
   try {
-    if (action === 'status') return await respondStatus(ctx, request)
-    if (action === 'purge') return await respondPurge(ctx, request)
+    const web = await toWebRequest(request, response)
+    if (web === null) return
+    const result = action === 'purge'
+      ? await respondPurge(ctx, web)
+      : await respondStatus(ctx, web)
+    await writeResponse(response, result)
   } catch (error) {
-    return json({ error: 'internal', message: describe(error) }, 500)
+    logLine('[serve] failed ' + action + ': ' + describe(error))
+    try {
+      await writeResponse(response, json({ error: 'internal', message: describe(error) }, 500))
+    } catch {
+      // The socket may already be gone.
+    }
   }
-  return json({ error: 'not-found' }, 404)
+}
+
+async function toWebRequest(request, response) {
+  const headers = new Headers()
+  for (const [key, value] of Object.entries(request.headers ?? {})) {
+    if (typeof value === 'string') headers.set(key, value)
+    else if (Array.isArray(value)) headers.set(key, value.join(', '))
+  }
+  let body
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const chunks = []
+    let size = 0
+    for await (const chunk of request) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.length
+      if (size > MAX_REQUEST_BYTES) {
+        await writeResponse(response, json({ error: 'payload-too-large' }, 413))
+        return null
+      }
+      chunks.push(buffer)
+    }
+    if (chunks.length > 0) body = Buffer.concat(chunks)
+  }
+  const url = new URL(request.url ?? PREFIX, 'http://127.0.0.1')
+  return new Request(url, { method: request.method ?? 'GET', headers, body })
+}
+
+async function writeResponse(response, result) {
+  const headers = {}
+  result.headers.forEach((value, key) => {
+    headers[key] = value
+  })
+  response.writeHead(result.status, headers)
+  response.end(await result.text())
 }
 
 /** Read-only facts the dialog needs before it offers the destructive action. */
