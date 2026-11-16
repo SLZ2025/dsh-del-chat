@@ -48,6 +48,10 @@ function logLine(line) {
 
 export const name = 'dsh-del-chat'
 
+// Cordis 4 refuses to read a service off the context unless it is declared
+// here: `ctx.webServer` throws "cannot get property ... without inject".
+export const inject = ['webServer']
+
 logLine('[module] imported ' + String(import.meta.url))
 
 const PREFIX = '/plugin/dsh-del-chat/'
@@ -68,20 +72,20 @@ const JSON_HEADERS = Object.freeze({
  * @param ctx - Host context carrying the web server.
  */
 export function apply(ctx) {
-  const server = ctx.webServer ?? (typeof ctx.get === 'function' ? ctx.get('webServer') : undefined)
   logLine(
-    '[apply] start name=' + name
-      + ' webServer=' + typeof server
+    '[apply] entered name=' + name
       + ' profileDir=' + String(process.env.DSH_PROFILE_DIR)
       + ' home=' + String(process.env.DSH_HOME),
   )
-  if (!server || typeof server.register !== 'function') {
-    logLine('[apply] no webServer on this context')
-    return
-  }
-  for (const action of ROUTES) {
-    const path = PREFIX + action
-    try {
+  try {
+    const server = ctx.webServer
+    logLine('[apply] webServer=' + typeof server)
+    if (!server || typeof server.register !== 'function') {
+      logLine('[apply] no webServer on this context')
+      return
+    }
+    for (const action of ROUTES) {
+      const path = PREFIX + action
       const dispose = server.register({
         kind: 'exact',
         path,
@@ -91,12 +95,12 @@ export function apply(ctx) {
       })
       logLine('[apply] route registered ' + path)
       ctx.effect(() => dispose, 'dsh-del-chat: ' + action)
-    } catch (error) {
-      logLine('[apply] route failed ' + path + ': ' + describe(error))
-      throw error
     }
+    logLine('[apply] done')
+  } catch (error) {
+    logLine('[apply] failed: ' + describe(error) + ' | stack: ' + String(error && error.stack))
+    throw error
   }
-  logLine('[apply] done')
 }
 
 /** Bridge one node request/response pair onto the Web handler. */
