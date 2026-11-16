@@ -56,14 +56,19 @@ DSH bundle whose patch inserts one row:
       name: dsh-del-chat
 ```
 
-Install straight from this repository — the bundle is not on npm:
+Install it from npm:
 
 ```bash
-dsh plugin add git+https://github.com/SLZ2025/dsh-del-chat.git
+dsh plugin add dsh-del-chat
 ```
 
-Add `#<commit>` to pin a revision. A local checkout installs the same way:
-`dsh plugin add D:\path\to\dsh-del-chat`.
+Or straight from this repository, pinning a revision:
+
+```bash
+dsh plugin add git+https://github.com/SLZ2025/dsh-del-chat.git#<commit>
+```
+
+A local checkout installs the same way: `dsh plugin add D:\path\to\dsh-del-chat`.
 
 Either way, **quit DSH completely and start it again** afterwards. A page refresh
 loads only the client half: the menu item shows up, but the Host routes stay

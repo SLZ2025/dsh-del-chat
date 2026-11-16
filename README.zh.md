@@ -50,14 +50,19 @@ Host 侧还有一道独立防线：**没归档过的会话会被 409 拒绝**，
       name: dsh-del-chat
 ```
 
-直接从本仓库安装（还没有发布到 npm）：
+从 npm 安装：
 
 ```bash
-dsh plugin add git+https://github.com/SLZ2025/dsh-del-chat.git
+dsh plugin add dsh-del-chat
 ```
 
-加 `#<commit>` 可以锁定具体提交。本地 checkout 也一样：
-`dsh plugin add D:\path\to\dsh-del-chat`。
+也可以直接从本仓库安装并锁定提交：
+
+```bash
+dsh plugin add git+https://github.com/SLZ2025/dsh-del-chat.git#<commit>
+```
+
+本地 checkout 也一样：`dsh plugin add D:\path\to\dsh-del-chat`。
 
 装完必须**完全退出 DSH 再重新启动**。刷新网页只会加载客户端部分：菜单项会冒出来，
 但 Host 端路由并没有注册，点下去会提示 Host 端未加载。
