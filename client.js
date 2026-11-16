@@ -315,7 +315,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'contextMenus'],
+      inject: ['slots', 'contextMenus', 'workspaces'],
       apply(ctx) {
         ctx.effect(() => {
           const style = document.createElement('style');
@@ -341,17 +341,12 @@ window.__ModuleLoader__.load({
          * only place the action makes sense. A failed probe returns `'unknown'` so
          * the item still shows and the dialog can explain what went wrong.
          */
-        const archivedVerdict = async (sessionId) => {
+        const archivedNow = (sessionId) => {
           try {
-            const response = await fetch(
-              `${ENDPOINT}status?sessionId=${encodeURIComponent(sessionId)}`,
-              { headers: { accept: 'application/json' } },
-            );
-            const payload = await readJson(response);
-            if (payload !== null && payload.archived === false) return 'current';
-            return 'unknown';
+            const snapshot = ctx.workspaces.list.getSnapshot();
+            return Array.from(snapshot.archivedSessionIds ?? []).includes(sessionId);
           } catch {
-            return 'unknown';
+            return true;
           }
         };
 
@@ -361,9 +356,10 @@ window.__ModuleLoader__.load({
               id: 'dsh-del-chat.delete',
               target: 'session',
               order: 650,
-              resolve: async ({ sessionId }) => {
+              observe: () => [ctx.workspaces.list],
+              resolve: ({ sessionId }) => {
                 if (!sessionId) return [];
-                if ((await archivedVerdict(sessionId)) === 'current') return [];
+                if (!archivedNow(sessionId)) return [];
                 return [
                   {
                     id: 'delete',
