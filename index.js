@@ -207,11 +207,10 @@ async function respondPurge(ctx, request) {
     return json({ ok: true, bytes: 0, removed: ['registry-only'] })
   }
 
-  // Unarchive before deleting: the registry refuses to archive an active session,
-  // so an archived one has no live writer, but its id must still leave the
-  // archive set through the domain write chain rather than by editing JSON.
-  await settleRegistry(registry, sessionId)
-
+  // Delete first, then settle the registry. A failed unlink must leave the Session
+  // exactly as the user found it — still archived, still in its workspace group —
+  // so the menu item is still there to retry. Settling first would move the row to
+  // Ungrouped and clear the archive mark, and the row would no longer offer a retry.
   let result
   try {
     result = removeSessionArtifacts({
@@ -230,6 +229,13 @@ async function respondPurge(ctx, request) {
     return json({ error: 'delete-failed', message }, 500)
   }
   logLine('[purge] done ' + sessionId + ' bytes=' + String(result.bytes) + ' removed=' + result.removed.join(',') + ' skipped=' + result.skipped.join(','))
+  // The bytes are already gone; a registry failure here must not turn a successful
+  // delete into an error the user would retry against missing files.
+  try {
+    await settleRegistry(registry, sessionId)
+  } catch (error) {
+    logLine('[purge] registry settle failed ' + sessionId + ': ' + describe(error))
+  }
   return json({ ok: true, bytes: result.bytes, removed: result.removed, skipped: result.skipped })
 }
 

@@ -29,20 +29,27 @@ Sidebar Session context menu (	arget: 'session')
                               (first GET /plugin/dsh-del-chat/status)
                                    └─ confirm ──> POST /plugin/dsh-del-chat/purge
                                         ├─ guard: must be archived
+                                        ├─ rm -rf <home>/sessions/*/session-<id>/
+                                        ├─ rm    <home>/storages/session_projcache/sessions/<id>.json
                                         ├─ entity.detachSession(id)     (Workspace record)
                                         ├─ registry.unarchiveSession(id)
-                                        ├─ rm -rf <home>/sessions/*/session-<id>/
-                                        └─ rm    <home>/storages/session_projcache/sessions/<id>.json
+                                        └─ Client: ctx.sessions.refresh()
 ```
 
 - **Archived Sessions only.** Archival is the one signal that the user already
   decided not to look at this conversation, and it gives deletion a harmless
   precondition (archive → inspect → delete). A Session that was never archived
   is refused with `409`.
-- **Registry first, files second.** `detachSession` / `unarchiveSession` run
-  through the `workspace` domain's own write chain, so persistence and the
-  follow feed stay authoritative and the plugin never hand-edits JSON. Deleting
-  files first would leave an id pointing at an empty slot.
+- **Files first, registry second.** The unlink is the irreversible step, so it
+  runs while every precondition still holds: a failed unlink leaves the Session
+  archived and inside its workspace group, with the menu item still available to
+  retry. `detachSession` / `unarchiveSession` then run through the `workspace`
+  domain's own write chain, so persistence and the follow feed stay
+  authoritative and the plugin never hand-edits JSON.
+- **The Client is told to re-read the catalog.** The sidebar draws from
+  `ctx.sessions.list`; after `/purge` succeeds the Client calls
+  `ctx.sessions.refresh()` so the Host-authoritative Session list is re-pulled and
+  the row disappears without a page reload.
 - **Exactly two places are deleted**: the Session's log slot and its projection
   cache slot. Attachments are content-addressed
   (`attachments/v1/objects/<2hex>/<sha256>`) and shared between Sessions, with
@@ -111,15 +118,20 @@ sessions from grouping without deleting their histories」。
    └─ 删除归档 ──> 确认弹窗（先 GET /plugin/dsh-del-chat/status 拿事实）
                         └─ 确认 ──> POST /plugin/dsh-del-chat/purge
                              ├─ 校验：必须已归档
+                             ├─ rm -rf <home>/sessions/*/session-<id>/
+                             ├─ rm    <home>/storages/session_projcache/sessions/<id>.json
                              ├─ 从 Workspace 实体 detachSession(id)
                              ├─ registry.unarchiveSession(id)
+                             └─ 客户端：ctx.sessions.refresh()
                              └─ 删 <home>/sessions/*/session-<id>/
                                 删 <home>/storages/session_projcache/sessions/<id>.json
 ```
 
 - **只允许删已归档的会话**：归档是「用户已经决定不再看它」的唯一信号，也让删除有一
   个非破坏性的前置动作。未归档的会话会被 409 拒绝。
-- **先走注册表、再删文件**：`detachSession` / `unarchiveSession` 走 `workspace`
+- **先删文件、再走注册表**：删文件是不可逆的一步，所以放在所有前置条件都还成立的时候做。
+  删失败时会话仍处于归档态、仍留在原工作区，菜单项还在，用户可以重试。之后
+  `detachSession` / `unarchiveSession` 走 `workspace`
   domain 自己的写链，持久化与 follow feed 由内核负责；插件不手改 JSON。
 - **只删两处**：会话日志槽与投影缓存槽。附件是内容寻址且跨会话共享去重，没有
   session→attachment 映射，永远不删；spill 溢出文件在系统临时目录、由启动 sweep
