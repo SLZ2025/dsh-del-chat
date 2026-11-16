@@ -194,8 +194,12 @@ async function respondPurge(ctx, request) {
     return json({ error: 'not-archived' }, 409)
   }
 
+  logLine('[purge] start ' + sessionId)
   const facts = await storedFacts(ctx, sessionId)
-  if (facts.home === null) return json({ error: 'dsh-home-unknown' }, 500)
+  if (facts.home === null) {
+    logLine('[purge] no dsh home for ' + sessionId)
+    return json({ error: 'dsh-home-unknown' }, 500)
+  }
   if (facts.sessionDir === null) {
     // The log is already gone: finish the registry bookkeeping so the archived id
     // does not linger forever.
@@ -219,11 +223,13 @@ async function respondPurge(ctx, request) {
     })
   } catch (error) {
     const message = describe(error)
+    logLine('[purge] failed ' + sessionId + ': ' + message)
     if (/EBUSY|EPERM|ENOTEMPTY/i.test(message)) {
       return json({ error: 'log-locked', message }, 423)
     }
     return json({ error: 'delete-failed', message }, 500)
   }
+  logLine('[purge] done ' + sessionId + ' bytes=' + String(result.bytes) + ' removed=' + result.removed.join(',') + ' skipped=' + result.skipped.join(','))
   return json({ ok: true, bytes: result.bytes, removed: result.removed, skipped: result.skipped })
 }
 
@@ -245,13 +251,20 @@ async function settleRegistry(registry, sessionId) {
     const owned = typeof entity.sessionIds === 'object' && entity.sessionIds !== null
     if (!owned) continue
     if (!Array.from(entity.sessionIds).includes(sessionId)) continue
-    await entity.detachSession(sessionId)
+    try {
+      await entity.detachSession(sessionId)
+      logLine('[settle] detached from workspace ' + String(entity.id ?? '?'))
+    } catch (error) {
+      logLine('[settle] detach failed: ' + describe(error))
+    }
     break
   }
   try {
     await registry.unarchiveSession(sessionId)
-  } catch {
+    logLine('[settle] archive mark cleared')
+  } catch (error) {
     // The archive mark may already be gone; the delete must still proceed.
+    logLine('[settle] unarchive failed: ' + describe(error) + ' | stack: ' + String(error && error.stack))
   }
 }
 
