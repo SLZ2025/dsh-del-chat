@@ -24,7 +24,7 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
   }
 
   const archivedIds = new Set(archived)
-  const calls = { detach: [], unarchive: [], routes: [] }
+  const calls = { detach: [], unarchive: [], routes: [], events: [] }
   const entity = {
     id: 'ws-1',
     path: 'D:\\workspace',
@@ -54,6 +54,9 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
   }
   const ctx = {
     effect: (fn) => fn(),
+    emit(event, sessionId) {
+      calls.events.push([event, sessionId])
+    },
     webServer: {
       register(spec) {
         calls.routes.push(spec)
@@ -196,12 +199,13 @@ test('purge refuses a session that was never archived', async () => {
     assert.equal(readJson(response).error, 'not-archived')
     assert.equal(existsSync(h.sessionDir), true)
     assert.deepEqual(h.calls.detach, [])
+    assert.deepEqual(h.calls.events, [])
   } finally {
     h.restore()
   }
 })
 
-test('purge settles the registry then deletes the slot and its projection cache', async () => {
+test('purge deletes the slot and its projection cache, settles the registry, then tells Clients', async () => {
   const h = harness()
   try {
     const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
@@ -214,6 +218,7 @@ test('purge settles the registry then deletes the slot and its projection cache'
     assert.equal(existsSync(h.projCacheFile), false)
     assert.deepEqual(h.calls.detach, [SESSION_ID])
     assert.deepEqual(h.calls.unarchive, [SESSION_ID])
+    assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
   } finally {
     h.restore()
   }
@@ -227,6 +232,7 @@ test('purge on a session whose log is already gone only settles the registry', a
     assert.equal(response.statusCode, 200)
     assert.deepEqual(body.removed, ['registry-only'])
     assert.deepEqual(h.calls.unarchive, [SESSION_ID])
+    assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
   } finally {
     h.restore()
   }

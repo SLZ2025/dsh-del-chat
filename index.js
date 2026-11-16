@@ -202,8 +202,9 @@ async function respondPurge(ctx, request) {
   }
   if (facts.sessionDir === null) {
     // The log is already gone: finish the registry bookkeeping so the archived id
-    // does not linger forever.
+    // does not linger forever, and drop any stale row a Client still holds.
     await settleRegistry(registry, sessionId)
+    broadcastRemoved(ctx, sessionId)
     return json({ ok: true, bytes: 0, removed: ['registry-only'] })
   }
 
@@ -236,7 +237,25 @@ async function respondPurge(ctx, request) {
   } catch (error) {
     logLine('[purge] registry settle failed ' + sessionId + ': ' + describe(error))
   }
+  broadcastRemoved(ctx, sessionId)
   return json({ ok: true, bytes: result.bytes, removed: result.removed, skipped: result.skipped })
+}
+
+/**
+ * Tell every connected Client that this Session is gone. `api-session/removed` is
+ * the Host event the sidebar's Session catalog already listens for: `dsh-api-remotes`
+ * forwards it to Clients and `dsh-api-session-controller` turns it into a list
+ * removal, so the row leaves the sidebar without a page reload or a GUI restart.
+ * @param ctx - plugin context used to emit the Host event.
+ * @param sessionId - Session whose row must leave every Client list.
+ */
+function broadcastRemoved(ctx, sessionId) {
+  try {
+    ctx.emit('api-session/removed', sessionId)
+    logLine('[purge] broadcast api-session/removed ' + sessionId)
+  } catch (error) {
+    logLine('[purge] broadcast failed ' + sessionId + ': ' + describe(error))
+  }
 }
 
 /**

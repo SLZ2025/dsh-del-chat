@@ -33,6 +33,7 @@ Sidebar Session context menu (	arget: 'session')
                                         ├─ rm    <home>/storages/session_projcache/sessions/<id>.json
                                         ├─ entity.detachSession(id)     (Workspace record)
                                         ├─ registry.unarchiveSession(id)
+                                        ├─ Host: ctx.emit('api-session/removed', id)
                                         └─ Client: ctx.sessions.refresh()
 ```
 
@@ -46,10 +47,11 @@ Sidebar Session context menu (	arget: 'session')
   retry. `detachSession` / `unarchiveSession` then run through the `workspace`
   domain's own write chain, so persistence and the follow feed stay
   authoritative and the plugin never hand-edits JSON.
-- **The Client is told to re-read the catalog.** The sidebar draws from
-  `ctx.sessions.list`; after `/purge` succeeds the Client calls
-  `ctx.sessions.refresh()` so the Host-authoritative Session list is re-pulled and
-  the row disappears without a page reload.
+- **Clients are told the Session is gone.** The Host emits the built-in
+  `api-session/removed` event; `dsh-api-remotes` forwards it and
+  `dsh-api-session-controller` applies it as a list removal, so the sidebar row
+  disappears at once. The Client then also calls `ctx.sessions.refresh()` so the
+  Host-authoritative Session list is re-pulled — no page reload, no GUI restart.
 - **Exactly two places are deleted**: the Session's log slot and its projection
   cache slot. Attachments are content-addressed
   (`attachments/v1/objects/<2hex>/<sha256>`) and shared between Sessions, with
@@ -122,6 +124,7 @@ sessions from grouping without deleting their histories」。
                              ├─ rm    <home>/storages/session_projcache/sessions/<id>.json
                              ├─ 从 Workspace 实体 detachSession(id)
                              ├─ registry.unarchiveSession(id)
+                             ├─ Host 广播 api-session/removed
                              └─ 客户端：ctx.sessions.refresh()
                              └─ 删 <home>/sessions/*/session-<id>/
                                 删 <home>/storages/session_projcache/sessions/<id>.json
