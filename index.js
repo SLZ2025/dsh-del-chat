@@ -247,17 +247,19 @@ async function settleRegistry(registry, sessionId) {
   } catch {
     entities = []
   }
+  // Detach from every workspace, not just the one whose filtered view still shows
+  // the id: the visible `sessionIds` getter hides ids whose log is already gone,
+  // so asking it would leave the stale id in the durable record and the Session
+  // would keep showing up in the sidebar until the next restart.
   for (const entity of entities) {
-    const owned = typeof entity.sessionIds === 'object' && entity.sessionIds !== null
-    if (!owned) continue
-    if (!Array.from(entity.sessionIds).includes(sessionId)) continue
     try {
-      await entity.detachSession(sessionId)
-      logLine('[settle] detached from workspace ' + String(entity.id ?? '?'))
+      const before = entity.sessionIds.length
+      const view = await entity.detachSession(sessionId)
+      const after = Array.isArray(view?.sessionIds) ? view.sessionIds.length : before
+      if (after !== before) logLine('[settle] detached from workspace ' + String(entity.id ?? '?') + ' (' + before + ' -> ' + after + ')')
     } catch (error) {
       logLine('[settle] detach failed: ' + describe(error))
     }
-    break
   }
   try {
     await registry.unarchiveSession(sessionId)
