@@ -238,7 +238,7 @@ window.__ModuleLoader__.load({
      * Small external store: the menu item only says "purge this session", the
      * overlay dialog renders whatever phase the store is in.
      */
-    function createDialog() {
+    function createDialog(refreshCatalog) {
       const listeners = new Set();
       let state = { open: false, sessionId: null, phase: 'idle', facts: null, error: '', freed: 0 };
       const publish = () => {
@@ -307,6 +307,10 @@ window.__ModuleLoader__.load({
             if (state.sessionId === sessionId) {
               set({ phase: 'done', freed: payload && Number.isFinite(payload.bytes) ? payload.bytes : 0 });
             }
+            // The bytes are gone, but the sidebar still draws from the Client's
+            // Session catalog. Pull the Host-authoritative list again so the row
+            // disappears without a page reload.
+            refreshCatalog();
           } catch (error) {
             if (state.sessionId === sessionId) set({ phase: 'error', error: failure(error) });
           }
@@ -315,7 +319,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'contextMenus', 'workspaces'],
+      inject: ['slots', 'contextMenus', 'workspaces', 'sessions'],
       apply(ctx) {
         ctx.effect(() => {
           const style = document.createElement('style');
@@ -331,7 +335,17 @@ window.__ModuleLoader__.load({
           ctx.slots.register({ name: 'contextMenu.icon', key: 'dsh-del-chat.trash' }, TrashIcon),
         );
 
-        const dialog = createDialog();
+        const refreshCatalog = () => {
+          const sessions = ctx.sessions;
+          if (sessions === undefined || typeof sessions.refresh !== 'function') return;
+          try {
+            void Promise.resolve(sessions.refresh()).catch(() => {});
+          } catch {
+            // A refused refresh leaves the stale row until the next reload.
+          }
+        };
+
+        const dialog = createDialog(refreshCatalog);
 
         /**
          * Whether the delete item belongs in this menu at all.

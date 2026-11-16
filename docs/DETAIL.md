@@ -69,8 +69,9 @@ Sidebar Session context menu (	arget: 'session')
 
 - **Irreversible.** There is no trash: once deleted, the Session cannot be
   restored, and `workspace.json` is not backed up by this plugin.
-- The sidebar row may linger until the next start — the registry
-  index is rebuilt from disk at startup.
+- The sidebar row is dropped by asking the Client to refresh its Session
+  catalog (`ctx.sessions.refresh()`); a failed refresh only leaves the row until
+  the next page load.
 - If the log was already removed outside DSH, `/purge` only finishes the
   registry bookkeeping (`removed: ['registry-only']`) and clears the stale
   archived id.
@@ -129,6 +130,6 @@ sessions from grouping without deleting their histories」。
 ### 已知代价
 
 - **不可撤销**：没有回收站，删除后无法恢复。
-- 删除后若侧栏行没有立刻消失，刷新或重开 DSH 即可（注册表索引在启动时按磁盘重建）。
+- 删除后插件会调用 `ctx.sessions.refresh()` 让客户端重拉会话目录；刷新失败时那一行会留到下次加载页面。
 - 若日志已被外部删掉，`/purge` 只做注册表收尾（`removed: ['registry-only']`），
   用来清掉 `archivedSessionIds` 里的残留 id。

@@ -76,8 +76,10 @@ unregistered and the dialog says the Host half is not loaded.
 2. Right-click that (now greyed out) sidebar row and pick **删除归档 / Delete archive**.
 3. Check the numbers in the dialog, then press **永久删除 / Delete permanently**.
 
-The row leaves the sidebar after the next page refresh or DSH restart; the
-`session-<id>/` directory is gone immediately.
+The `session-<id>/` directory is gone immediately, and the plugin then asks the
+Client to pull the Host-authoritative Session catalog again, so the row leaves
+the sidebar without a reload. (The sidebar draws from that catalog; nothing
+else tells it the row is gone.)
 
 ## Where the bytes live
 
@@ -113,8 +115,9 @@ slot under the persistence root, then detaches, unarchives and deletes.
   that prerequisite is deliberate.
 * **`log-locked` (`423`)** — the log is still open in another process. Restart DSH
   and retry.
-* **The row is still in the sidebar** — the registry index is rebuilt from disk at
-  startup; refresh the page or restart.
+* **The row is still in the sidebar** — the purge succeeded but the refresh did
+  not land; reload the page. If it comes back after the reload, the Session log
+  still exists: check the dialog numbers and the Host log.
 * **Dialog works but nothing is deleted** — check the Host log for
   `delete-failed` and the reported `message`.
 

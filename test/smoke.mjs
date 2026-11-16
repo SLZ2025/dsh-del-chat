@@ -56,6 +56,7 @@ assert.match(client, /id: 'dsh-del-chat'/)
 assert.match(client, /target: 'session'/)
 assert.match(client, /'\/plugin\/dsh-del-chat\/'/)
 assert.ok(client.includes("name: 'shell.overlay'"), 'client must register the overlay dialog')
+assert.match(client, /sessions\.refresh\(\)/, 'client must refresh the Session catalog after a purge')
 
 for (const language of ['zh', 'en']) {
   const locale = readJson(`locale/${language}.json`)
