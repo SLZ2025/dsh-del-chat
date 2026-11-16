@@ -101,7 +101,11 @@ known costs. In short: the client half registers a data-only menu contribution f
 item for an archived Session) plus one `shell.overlay` dialog; the Host half
 exposes `GET /plugin/dsh-del-chat/status` and `POST /plugin/dsh-del-chat/purge`,
 checks that the id is archived and that the slot directory really is that Session's
-slot under the persistence root, then detaches, unarchives and deletes.
+slot under the persistence root, then deletes. It detaches and unarchives only when
+the Host has already released the Session; while the Session is still resident in
+the Host's in-memory store (a plugin cannot drop that entry) the delete keeps the
+archive mark and settles the workspace record on `session/disposed` instead, so the
+ghost row never reappears under Ungrouped.
 
 ## Troubleshooting
 
@@ -115,9 +119,11 @@ slot under the persistence root, then detaches, unarchives and deletes.
   that prerequisite is deliberate.
 * **`log-locked` (`423`)** — the log is still open in another process. Restart DSH
   and retry.
-* **The row is still in the sidebar** — the purge succeeded but the refresh did
-  not land; reload the page. If it comes back after the reload, the Session log
-  still exists: check the dialog numbers and the Host log.
+* **The row is still in the sidebar** — two cases. If it is greyed and still sits in
+  its own group, the Host was still holding the Session in memory; it disappears for
+  good once the Host releases it (the plugin settles the record then). If it went to
+  **Ungrouped**, the Session log still exists: check the dialog numbers and the Host
+  log.
 * **Dialog works but nothing is deleted** — check the Host log for
   `delete-failed` and the reported `message`.
 

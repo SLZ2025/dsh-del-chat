@@ -307,10 +307,12 @@ window.__ModuleLoader__.load({
             if (state.sessionId === sessionId) {
               set({ phase: 'done', freed: payload && Number.isFinite(payload.bytes) ? payload.bytes : 0 });
             }
-            // The bytes are gone, but the sidebar still draws from the Client's
-            // Session catalog. Pull the Host-authoritative list again so the row
-            // disappears without a page reload.
-            refreshCatalog();
+            // The bytes are gone, and the Host already told every Client to drop the
+            // row. Pull the catalog only when the Host also released the Session:
+            // while it stays resident the catalog still lists it, and re-reading would
+            // resurrect the ghost as an Ungrouped row on the next paint.
+            const settled = payload === null || payload.settled !== false;
+            if (settled) refreshCatalog();
           } catch (error) {
             if (state.sessionId === sessionId) set({ phase: 'error', error: failure(error) });
           }

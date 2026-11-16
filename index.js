@@ -96,6 +96,14 @@ export function apply(ctx) {
       logLine('[apply] route registered ' + path)
       ctx.effect(() => dispose, 'dsh-del-chat: ' + action)
     }
+    ctx.effect(() => ctx.on('session/disposed', (session) => {
+      const disposed = String(session?.id ?? '')
+      if (disposed === '') return
+      void reconcileArchived(ctx, disposed).catch((error) => {
+        logLine('[reconcile] disposed ' + disposed + ' failed: ' + describe(error))
+      })
+    }), 'dsh-del-chat: settle when the host releases a session')
+    void reconcileAll(ctx).catch((error) => logLine('[reconcile] sweep failed: ' + describe(error)))
     logLine('[apply] done')
   } catch (error) {
     logLine('[apply] failed: ' + describe(error) + ' | stack: ' + String(error && error.stack))
@@ -173,7 +181,42 @@ async function respondStatus(ctx, request) {
     exists: facts.sessionDir !== null,
     bytes: facts.sessionDir === null ? 0 : measureDirectory(facts.sessionDir),
     projCache: facts.projCacheFile !== null,
+    ...await diagnostics(ctx, sessionId),
   })
+}
+
+/**
+ * Report whether the Host still holds this Session in memory or still lists it in
+ * its catalog. Both are true for a Session whose log was deleted while it stayed
+ * resident: the catalog is the reason a sidebar row can outlive the bytes.
+ * @param ctx - plugin context used to reach the Session store and the query service.
+ * @param sessionId - Session to inspect.
+ * @returns `resident` and `listed` flags; `undefined` when a service is unavailable.
+ */
+async function diagnostics(ctx, sessionId) {
+  const result = {}
+  try {
+    const sessions = ctx.get('sessions')
+    result.resident = typeof sessions?.get === 'function' ? sessions.get(sessionId) !== undefined : undefined
+  } catch (error) {
+    result.resident = undefined
+    logLine('[status] resident probe failed: ' + describe(error))
+  }
+  try {
+    const query = ctx.get('sessionQuery')
+    if (query && typeof query.listSessions === 'function') {
+      const records = await query.listSessions()
+      const ids = records.map((record) => String(record?.header?.id ?? ''))
+      result.listed = ids.includes(sessionId)
+      result.catalogSize = ids.length
+    } else {
+      result.listed = undefined
+    }
+  } catch (error) {
+    result.listed = undefined
+    logLine('[status] listed probe failed: ' + describe(error))
+  }
+  return result
 }
 
 /** Delete one archived session after every safety check passed. */
@@ -203,9 +246,10 @@ async function respondPurge(ctx, request) {
   if (facts.sessionDir === null) {
     // The log is already gone: finish the registry bookkeeping so the archived id
     // does not linger forever, and drop any stale row a Client still holds.
-    await settleRegistry(registry, sessionId)
+    const held = isResident(ctx, sessionId)
+    if (!held) await settleRegistry(registry, sessionId)
     broadcastRemoved(ctx, sessionId)
-    return json({ ok: true, bytes: 0, removed: ['registry-only'] })
+    return json({ ok: true, bytes: 0, removed: ['registry-only'], settled: !held })
   }
 
   // Delete first, then settle the registry. A failed unlink must leave the Session
@@ -232,13 +276,28 @@ async function respondPurge(ctx, request) {
   logLine('[purge] done ' + sessionId + ' bytes=' + String(result.bytes) + ' removed=' + result.removed.join(',') + ' skipped=' + result.skipped.join(','))
   // The bytes are already gone; a registry failure here must not turn a successful
   // delete into an error the user would retry against missing files.
-  try {
-    await settleRegistry(registry, sessionId)
-  } catch (error) {
-    logLine('[purge] registry settle failed ' + sessionId + ': ' + describe(error))
+  const held = isResident(ctx, sessionId)
+  if (held) {
+    // The Host still holds this Session in memory, so its cataloged row survives the
+    // delete. Settling now would detach it and clear the archive mark, and the Client
+    // would render the ghost as an Ungrouped row on its next list read. Keep both
+    // marks until `session/disposed` reports the Host actually let go, then settle.
+    logLine('[purge] still resident, registry settles when the host releases it')
+  } else {
+    try {
+      await settleRegistry(registry, sessionId)
+    } catch (error) {
+      logLine('[purge] registry settle failed ' + sessionId + ': ' + describe(error))
+    }
   }
   broadcastRemoved(ctx, sessionId)
-  return json({ ok: true, bytes: result.bytes, removed: result.removed, skipped: result.skipped })
+  return json({
+    ok: true,
+    bytes: result.bytes,
+    removed: result.removed,
+    skipped: result.skipped,
+    settled: !held,
+  })
 }
 
 /**
@@ -256,6 +315,64 @@ function broadcastRemoved(ctx, sessionId) {
   } catch (error) {
     logLine('[purge] broadcast failed ' + sessionId + ': ' + describe(error))
   }
+}
+
+/**
+ * Whether the Host still holds this Session in memory. A resident Session stays in
+ * the Host catalog even after its log is deleted, so its row can outlive the bytes;
+ * that is the one case this plugin cannot settle on the spot.
+ * @param ctx - Host context carrying the Session store.
+ * @param sessionId - Session to test.
+ * @returns true when the Session store still returns it.
+ */
+function isResident(ctx, sessionId) {
+  try {
+    const sessions = ctx.get('sessions')
+    return typeof sessions?.get === 'function' ? sessions.get(sessionId) !== undefined : false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Finish a delete whose Session the Host has since released: detach it from its
+ * workspace, drop the archived mark, and tell Clients to drop the row.
+ * @param ctx - Host context.
+ * @param sessionId - Session the Host just disposed.
+ * @returns true when this call settled the session.
+ */
+async function reconcileArchived(ctx, sessionId) {
+  const registry = ctx.get('workspaceRegistry')
+  if (!registry) return false
+  if (!registry.archivedSessionIds.includes(sessionId)) return false
+  if (isResident(ctx, sessionId)) return false
+  const facts = await storedFacts(ctx, sessionId)
+  if (facts.home === null || facts.sessionDir !== null) return false
+  await settleRegistry(registry, sessionId)
+  broadcastRemoved(ctx, sessionId)
+  logLine('[reconcile] settled released session ' + sessionId)
+  return true
+}
+
+/**
+ * Sweep archived ids at start so a Session deleted under an older version, or while
+ * it was resident, does not keep a durable archive mark forever.
+ * @param ctx - Host context.
+ */
+async function reconcileAll(ctx) {
+  const registry = ctx.get('workspaceRegistry')
+  if (!registry) return
+  const ids = [...registry.archivedSessionIds]
+  if (ids.length === 0) return
+  let settled = 0
+  for (const id of ids) {
+    try {
+      if (await reconcileArchived(ctx, id)) settled += 1
+    } catch (error) {
+      logLine('[reconcile] ' + id + ' failed: ' + describe(error))
+    }
+  }
+  logLine('[reconcile] archived ids checked=' + String(ids.length) + ' settled=' + String(settled))
 }
 
 /**

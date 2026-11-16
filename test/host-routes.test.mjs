@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -24,7 +24,7 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
   }
 
   const archivedIds = new Set(archived)
-  const calls = { detach: [], unarchive: [], routes: [], events: [] }
+  const calls = { detach: [], unarchive: [], routes: [], events: [], listeners: [], resident: new Set() }
   const entity = {
     id: 'ws-1',
     path: 'D:\\workspace',
@@ -48,12 +48,19 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
   }
   const persistence = {
     async stat(id) {
-      if (!dir || id !== SESSION_ID) return undefined
-      return { location: { path: join(sessionDir, 'session.v4.jsonl.zstd') } }
+      const logPath = join(sessionDir, 'session.v4.jsonl.zstd')
+      if (!dir || id !== SESSION_ID || !existsSync(logPath)) return undefined
+      return { location: { path: logPath } }
     },
   }
   const ctx = {
-    effect: (fn) => fn(),
+    effect: (fn) => {
+      fn()
+    },
+    on(event, listener) {
+      calls.listeners.push([event, listener])
+      return () => {}
+    },
     emit(event, sessionId) {
       calls.events.push([event, sessionId])
     },
@@ -66,6 +73,11 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
     get(name) {
       if (name === 'workspaceRegistry') return registry
       if (name === 'sessionPersistence') return persistence
+      if (name === 'sessions') {
+        return {
+          get: (id) => (calls.resident.has(id) ? { id } : undefined),
+        }
+      }
       return undefined
     },
   }
@@ -82,6 +94,7 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
   return {
     home,
     sessionDir,
+    archive: (id) => archivedIds.add(id),
     projCacheFile: join(projCacheRoot, `${SESSION_ID}.json`),
     calls,
     restore: () => {
@@ -156,6 +169,7 @@ test('status reports archived facts without touching disk', async () => {
       exists: true,
       bytes: 2048,
       projCache: true,
+      resident: false,
     })
     assert.equal(existsSync(h.sessionDir), true)
   } finally {
@@ -174,6 +188,7 @@ test('resolves the DSH home from the stored log path when no env hint exists', a
       exists: true,
       bytes: 2048,
       projCache: true,
+      resident: false,
     })
   } finally {
     h.restore()
@@ -216,6 +231,7 @@ test('purge deletes the slot and its projection cache, settles the registry, the
     assert.deepEqual(body.removed, ['session-log', 'projection-cache'])
     assert.equal(existsSync(h.sessionDir), false)
     assert.equal(existsSync(h.projCacheFile), false)
+    assert.equal(body.settled, true)
     assert.deepEqual(h.calls.detach, [SESSION_ID])
     assert.deepEqual(h.calls.unarchive, [SESSION_ID])
     assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
@@ -227,10 +243,61 @@ test('purge deletes the slot and its projection cache, settles the registry, the
 test('purge on a session whose log is already gone only settles the registry', async () => {
   const h = harness({ dir: false })
   try {
+    // The start sweep settles a leftover mark on its own; let it finish, then put
+    // the mark back to exercise the "bytes are gone, only bookkeeping left" branch.
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    h.archive(SESSION_ID)
+    h.calls.unarchive.length = 0
+    h.calls.events.length = 0
     const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
     const body = readJson(response)
     assert.equal(response.statusCode, 200)
     assert.deepEqual(body.removed, ['registry-only'])
+    assert.deepEqual(h.calls.unarchive, [SESSION_ID])
+    assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
+  } finally {
+    h.restore()
+  }
+})
+
+test('purge leaves the registry alone while the Host still holds the Session', async () => {
+  const h = harness()
+  try {
+    h.calls.resident.add(SESSION_ID)
+    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
+    const body = readJson(response)
+    assert.equal(response.statusCode, 200)
+    assert.equal(body.settled, false)
+    assert.equal(existsSync(h.sessionDir), false)
+    // The Session stays archived and attached, so the Client redraws it in its own
+    // group instead of moving the ghost to the Ungrouped section.
+    assert.deepEqual(h.calls.detach, [])
+    assert.deepEqual(h.calls.unarchive, [])
+    assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
+  } finally {
+    h.restore()
+  }
+})
+
+test('a released Session finishes the delete it could not settle', async () => {
+  const h = harness()
+  try {
+    rmSync(h.sessionDir, { recursive: true, force: true })
+    assert.deepEqual(h.calls.listeners.map(([event]) => event), ['session/disposed'])
+    const [, listener] = h.calls.listeners[0]
+    listener({ id: SESSION_ID })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.deepEqual(h.calls.unarchive, [SESSION_ID])
+    assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
+  } finally {
+    h.restore()
+  }
+})
+
+test('the start sweep settles an archived Session whose log is gone', async () => {
+  const h = harness({ dir: false })
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 20))
     assert.deepEqual(h.calls.unarchive, [SESSION_ID])
     assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
   } finally {

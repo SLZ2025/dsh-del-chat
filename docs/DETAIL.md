@@ -24,17 +24,19 @@ can no longer be opened, so the header menu could never reach it.
 ## Mental model
 
 ```
-Sidebar Session context menu (	arget: 'session')
+Sidebar Session context menu (target: 'session')
    └─ Delete archive ──> shell.overlay confirmation dialog
                               (first GET /plugin/dsh-del-chat/status)
                                    └─ confirm ──> POST /plugin/dsh-del-chat/purge
                                         ├─ guard: must be archived
                                         ├─ rm -rf <home>/sessions/*/session-<id>/
                                         ├─ rm    <home>/storages/session_projcache/sessions/<id>.json
-                                        ├─ entity.detachSession(id)     (Workspace record)
-                                        ├─ registry.unarchiveSession(id)
                                         ├─ Host: ctx.emit('api-session/removed', id)
-                                        └─ Client: ctx.sessions.refresh()
+                                        ├─ if the Host already released the Session:
+                                        │     entity.detachSession(id)     (Workspace record)
+                                        │     registry.unarchiveSession(id)
+                                        │     Client: ctx.sessions.refresh()
+                                        └─ if the Host still holds it: keep both marks, settle on session/disposed
 ```
 
 - **Archived Sessions only.** Archival is the one signal that the user already
@@ -50,8 +52,15 @@ Sidebar Session context menu (	arget: 'session')
 - **Clients are told the Session is gone.** The Host emits the built-in
   `api-session/removed` event; `dsh-api-remotes` forwards it and
   `dsh-api-session-controller` applies it as a list removal, so the sidebar row
-  disappears at once. The Client then also calls `ctx.sessions.refresh()` so the
-  Host-authoritative Session list is re-pulled — no page reload, no GUI restart.
+  disappears at once — no page reload, no GUI restart.
+- **A Session the Host still holds is settled later.** The Host catalog lists a
+  Session from the in-memory `SessionStore` before it looks at the log, and a
+  resident Session cannot be dropped by a plugin: the store hands its detach
+  capability to whoever entered it. Settling such a Session up front would move its
+  row into the Ungrouped section while the catalog kept listing it, so the delete
+  keeps both marks and the row invisible instead, and a single `session/disposed`
+  listener finishes the bookkeeping the moment the Host lets go. A sweep at `apply`
+  does the same for marks left behind by an older version.
 - **Exactly two places are deleted**: the Session's log slot and its projection
   cache slot. Attachments are content-addressed
   (`attachments/v1/objects/<2hex>/<sha256>`) and shared between Sessions, with
@@ -133,6 +142,10 @@ sessions from grouping without deleting their histories」。
 - **只允许删已归档的会话**：归档是「用户已经决定不再看它」的唯一信号，也让删除有一
   个非破坏性的前置动作。未归档的会话会被 409 拒绝。
 - **先删文件、再走注册表**：删文件是不可逆的一步，所以放在所有前置条件都还成立的时候做。
+- **被 Host 常驻的会话延后结算**：Host 的会话目录先看内存里的 `SessionStore`，而常驻会话的
+  detach 能力属于当初 enter 它的那一方，插件拿不到。此时若照常 detach 并取消归档，侧栏就会把
+  这一行挪到「未分组」，而目录仍然列着它。所以遇到常驻会话时保留归档标记、只广播移除，等
+  `session/disposed` 事件到来再补做 detach 与取消归档；`apply` 时的清扫负责收拾旧版本留下的标记。
   删失败时会话仍处于归档态、仍留在原工作区，菜单项还在，用户可以重试。之后
   `detachSession` / `unarchiveSession` 走 `workspace`
   domain 自己的写链，持久化与 follow feed 由内核负责；插件不手改 JSON。
