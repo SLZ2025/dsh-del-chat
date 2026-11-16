@@ -1,6 +1,6 @@
 {
   "name": "dsh-del-chat",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Adds a “Delete archive” item to the DSH sidebar Session menu that permanently removes an archived Session's JSONL log, projection cache and Workspace record from disk.",
   "license": "MIT",

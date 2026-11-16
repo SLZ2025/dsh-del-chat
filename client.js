@@ -360,7 +360,7 @@ window.__ModuleLoader__.load({
             ctx.contextMenus.register({
               id: 'dsh-del-chat.delete',
               target: 'session',
-              order: 600,
+              order: 650,
               resolve: async ({ sessionId }) => {
                 if (!sessionId) return [];
                 if ((await archivedVerdict(sessionId)) === 'current') return [];
