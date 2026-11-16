@@ -53,7 +53,7 @@ for (const name of [
 const client = read('client.js')
 assert.match(client, /window\.__ModuleLoader__\.load\(\{/)
 assert.match(client, /id: 'dsh-del-chat'/)
-assert.match(client, /target: 'sessionHeader'/)
+assert.match(client, /target: 'session'/)
 assert.match(client, /'\/plugin\/dsh-del-chat\/'/)
 assert.ok(client.includes("name: 'shell.overlay'"), 'client must register the overlay dialog')
 

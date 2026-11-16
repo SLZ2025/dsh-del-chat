@@ -1,8 +1,8 @@
 # dsh-del-chat
 
-**Deleting a conversation in DeepSeek Harness, for real.** Archiving a Session
-only hides it from the sidebar — the log stays on disk forever. This plugin adds a
-**Delete conversation** item to the Session header "…" menu and removes an
+**Deleting an archived conversation in DeepSeek Harness, for real.** Archiving a
+Session only hides it from the sidebar — the log stays on disk forever. This plugin
+adds a **Delete archive** item to the sidebar Session context menu and removes an
 archived Session's log, projection cache and Workspace record from disk.
 
 <!-- prettier-ignore -->
@@ -12,26 +12,31 @@ archived Session's log, projection cache and Workspace record from disk.
 
 ## What it adds
 
-One item in the menu that already carries *Copy conversation as Markdown* and
-*Download Session log*, rendered in the danger style below a separator:
+One item in the sidebar Session context menu — the menu that carries *Rename*,
+*Fork Session*, *Copy Session ID* and *Unarchive* — rendered in the danger style
+below a separator:
 
 ```
 ┌────────────────────────────┐
-│ 复制会话为 Markdown          │
-│ 下载 Session 日志            │
+│ 重命名           Ctrl+Alt+G │
+│ 分叉会话         Ctrl+Alt+F │
 │ ────────────────────────── │
+│ 复制 Session ID             │
 │ 在应用中打开            ›   │
+│ 取消归档                    │
 │ ────────────────────────── │
-│ 🗑 删除对话                  │  ← this plugin
-│ ────────────────────────── │
-│ 反馈                        │
+│ 🗑 删除归档                  │  ← this plugin
 └────────────────────────────┘
 ```
 
+The item only shows up for a Session that is already archived: an unarchived one
+may still be written to and must not be purged, while an archived one can no
+longer be opened, so the header "…" menu can never reach it.
+
 Clicking it opens a confirmation dialog that reports the Session id, the size of
-its log and whether a projection cache exists — then the Host half deletes it. A
-Session that was never archived is refused (`409`), so the flow is always
-*archive → inspect → delete*.
+its log and whether a projection cache exists — then the Host half deletes it. The
+Host keeps an independent guard: a Session that was never archived is refused
+(`409`), so the flow is always *archive → inspect → delete*.
 
 ## Requirements
 
@@ -66,9 +71,9 @@ unregistered and the dialog says the Host half is not loaded.
 
 ## Usage
 
-1. Archive the conversation you want gone — sidebar row → **归档 / Archive**, or
-   the `Ctrl+Shift+A` shortcut on the open Session.
-2. Open that Session's header **…** menu and pick **删除对话 / Delete conversation**.
+1. Archive the conversation you want gone — right-click the sidebar row → **归档 /
+   Archive**, or the `Ctrl+Shift+A` shortcut on the open Session.
+2. Right-click that (now greyed out) sidebar row and pick **删除归档 / Delete archive**.
 3. Check the numbers in the dialog, then press **永久删除 / Delete permanently**.
 
 The row leaves the sidebar after the next page refresh or DSH restart; the
@@ -90,19 +95,20 @@ write chain, never by editing `workspace.json`.
 
 See [`docs/DETAIL.md`](docs/DETAIL.md) for the reasoning, the guard table and the
 known costs. In short: the client half registers a data-only menu contribution for
-`sessionHeader` plus one `shell.overlay` dialog; the Host half exposes
-`GET /plugin/dsh-del-chat/status` and `POST /plugin/dsh-del-chat/purge`, checks
-that the id is archived and that the slot directory really is that Session's slot
-under the persistence root, then detaches, unarchives and deletes.
+`session` (it asks the status route once when the menu opens, and only offers the
+item for an archived Session) plus one `shell.overlay` dialog; the Host half
+exposes `GET /plugin/dsh-del-chat/status` and `POST /plugin/dsh-del-chat/purge`,
+checks that the id is archived and that the slot directory really is that Session's
+slot under the persistence root, then detaches, unarchives and deletes.
 
 ## Troubleshooting
 
-* **The item is missing** — restart DSH rather than refreshing: the client half
-  injects `@deepseek-ai/dsh-client-ui-workspace`, and the menu only renders on
-  the Session header of an open Session.
+* **The item is missing** — it only appears for archived Sessions. Archive first
+  (`Ctrl+Shift+A`), refresh the page so the client half is loaded, then
+  right-click the sidebar row.
 * **"The Host half of this plugin is not loaded"** — the plugin is installed but
   the running DSH process predates it. Quit the app completely and start it
-  again; `<profile>\dsh-del-chat.log` should then contain `[apply]`.
+  again; `%TEMP%\dsh-del-chat.log` should then contain `[apply]`.
 * **"Only archived Sessions can be deleted permanently"** — archive it first;
   that prerequisite is deliberate.
 * **`log-locked` (`423`)** — the log is still open in another process. Restart DSH

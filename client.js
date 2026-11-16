@@ -1,13 +1,13 @@
 /**
  * Client half of dsh-del-chat.
  *
- * Adds one item to the Session Header "…" menu — the same menu that carries
- * "复制会话为 Markdown" and "下载 Session 日志" — and a confirmation dialog that
- * shows what will actually be deleted before it asks the Host to delete it.
+ * Adds one item to the sidebar Session context menu — the menu that carries
+ * "重命名 / 分叉会话 / 取消归档" — and a confirmation dialog that shows what
+ * will actually be deleted before it asks the Host to delete it.
  *
- * The menu contribution is data (`ctx.contextMenus.register` with
- * `target: 'sessionHeader'`); the dialog rides `shell.overlay` because the header
- * menu has no dialog seat of its own.
+ * The item only appears for a Session that is already archived: an archived
+ * Session cannot be opened any more, so the header "…" menu can never reach it,
+ * and a live Session must not be purged while something may still be writing.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-del-chat',
@@ -20,8 +20,8 @@ window.__ModuleLoader__.load({
 
     const STRINGS = {
       zh: {
-        action: '删除对话',
-        title: '删除对话',
+        action: '删除归档',
+        title: '删除归档',
         loading: '正在检查该会话…',
         archivedRequired: '只有已归档的会话才能彻底删除。先在侧栏把它归档（Ctrl+Shift+A），再回来删。',
         missing: '这个会话的日志已经不在磁盘上了。',
@@ -53,8 +53,8 @@ window.__ModuleLoader__.load({
         },
       },
       en: {
-        action: 'Delete conversation',
-        title: 'Delete conversation',
+        action: 'Delete archive',
+        title: 'Delete archive',
         loading: 'Inspecting this Session…',
         archivedRequired: 'Only archived Sessions can be deleted permanently. Archive it in the sidebar first (Ctrl+Shift+A), then come back.',
         missing: 'This Session’s log is no longer on disk.',
@@ -333,26 +333,52 @@ window.__ModuleLoader__.load({
 
         const dialog = createDialog();
 
+        /**
+         * Whether the delete item belongs in this menu at all.
+         *
+         * `'current'` means the Host says the Session is not archived, so the item
+         * is hidden: a live Session is never purgeable, and an archived row is the
+         * only place the action makes sense. A failed probe returns `'unknown'` so
+         * the item still shows and the dialog can explain what went wrong.
+         */
+        const archivedVerdict = async (sessionId) => {
+          try {
+            const response = await fetch(
+              `${ENDPOINT}status?sessionId=${encodeURIComponent(sessionId)}`,
+              { headers: { accept: 'application/json' } },
+            );
+            const payload = await readJson(response);
+            if (payload !== null && payload.archived === false) return 'current';
+            return 'unknown';
+          } catch {
+            return 'unknown';
+          }
+        };
+
         ctx.effect(
           () =>
             ctx.contextMenus.register({
               id: 'dsh-del-chat.delete',
-              target: 'sessionHeader',
-              order: 550,
-              resolve: ({ sessionId }) => [
-                {
-                  id: 'delete',
-                  label: TEXT.action,
-                  icon: { key: 'dsh-del-chat.trash' },
-                  danger: true,
-                  separatorBefore: true,
-                  run: () => {
-                    dialog.request(sessionId);
+              target: 'session',
+              order: 600,
+              resolve: async ({ sessionId }) => {
+                if (!sessionId) return [];
+                if ((await archivedVerdict(sessionId)) === 'current') return [];
+                return [
+                  {
+                    id: 'delete',
+                    label: TEXT.action,
+                    icon: { key: 'dsh-del-chat.trash' },
+                    danger: true,
+                    separatorBefore: true,
+                    run: () => {
+                      dialog.request(sessionId);
+                    },
                   },
-                },
-              ],
+                ];
+              },
             }),
-          'dsh-del-chat: Session header menu',
+          'dsh-del-chat: Session menu',
         );
 
         function DialogHost() {

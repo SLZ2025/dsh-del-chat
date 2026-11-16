@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Delete conversation",
-    "description": "Adds a “Delete conversation” item to the Session header menu that permanently removes an archived Session's JSONL log, projection cache and Workspace record from disk.",
+    "title": "Delete archive",
+    "description": "Adds a “Delete archive” item to the sidebar Session menu that permanently removes an archived Session's JSONL log, projection cache and Workspace record from disk.",
     "detail": "docs/DETAIL.md"
   }
 }

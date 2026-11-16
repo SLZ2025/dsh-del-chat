@@ -1,4 +1,4 @@
-# Delete conversation (`dsh-del-chat`)
+# Delete archive (`dsh-del-chat`)
 
 ## The problem it solves
 
@@ -14,16 +14,18 @@ and `dsh-workspace/README.md` describes archiving as *hiding sessions from
 grouping without deleting their histories*.
 
 This plugin adds that missing step in the form the Workspace package asks for —
-separately named, explicitly confirmed. One item, **删除对话 / Delete
-conversation**, appears in the Session header "…" menu (the menu that already
-carries *Copy conversation as Markdown*, *Download Session log* and *Open in
-app*), and it deletes an archived Session's artifacts for real.
+separately named, explicitly confirmed. One item, **删除归档 / Delete archive**,
+appears in the sidebar Session context menu (the menu that already carries
+*Rename*, *Fork Session*, *Copy Session ID* and *Unarchive*), and it deletes an
+archived Session's artifacts for real. It is listed only for a Session that is
+already archived: an unarchived one may still have a writer, and an archived one
+can no longer be opened, so the header menu could never reach it.
 
 ## Mental model
 
 ```
-Session header "…" menu
-   └─ Delete conversation ──> shell.overlay confirmation dialog
+Sidebar Session context menu (	arget: 'session')
+   └─ Delete archive ──> shell.overlay confirmation dialog
                               (first GET /plugin/dsh-del-chat/status)
                                    └─ confirm ──> POST /plugin/dsh-del-chat/purge
                                         ├─ guard: must be archived
@@ -55,7 +57,7 @@ Session header "…" menu
 
 | Where | Check |
 | --- | --- |
-| Menu item | only on `sessionHeader`; `danger: true` plus a separator |
+| Menu item | only for an archived Session (`target: 'session'`, decided by one read-only `/status` call when the menu opens); `danger: true` plus a separator |
 | Dialog | shows Session id, log size and whether a projection cache exists; confirm is disabled for a Session that is not archived |
 | `GET /status` | read-only; returns `archived / exists / bytes / projCache` |
 | `POST /purge` | Session-id allow-list regex; the id must be in the archive set |
@@ -97,14 +99,15 @@ deletes session files — logs accumulate under `root` until removed externally;
 the seam has no deletion API.」；`dsh-workspace/README.md` 也写着归档只是「hide
 sessions from grouping without deleting their histories」。
 
-本插件补上「单独命名、显式确认」的那一步：在对话右上「…」菜单里加一项
-**删除对话**，把已归档会话真正从磁盘上删掉。
+本插件补上「单独命名、显式确认」的那一步：在侧栏会话右键菜单里加一项
+**删除归档**，把已归档会话真正从磁盘上删掉。这一项只对已归档的会话出现——未归档的
+会话可能还有写入者，而已归档的会话打不开头部菜单，入口只能放在侧栏。
 
 ### 心智模型
 
 ```
-Session 头部「…」菜单
-   └─ 删除对话 ──> 确认弹窗（先 GET /plugin/dsh-del-chat/status 拿事实）
+侧栏会话右键菜单（target: 'session'）
+   └─ 删除归档 ──> 确认弹窗（先 GET /plugin/dsh-del-chat/status 拿事实）
                         └─ 确认 ──> POST /plugin/dsh-del-chat/purge
                              ├─ 校验：必须已归档
                              ├─ 从 Workspace 实体 detachSession(id)
