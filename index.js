@@ -19,7 +19,7 @@
  * touched.
  */
 import { appendFileSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   measureDirectory,
@@ -164,11 +164,9 @@ async function respondStatus(ctx, request) {
   if (!SESSION_ID.test(sessionId)) return json({ error: 'invalid-session-id' }, 400)
   const registry = ctx.get('workspaceRegistry')
   if (!registry) return json({ error: 'workspace-registry-unavailable' }, 503)
-  const home = homeOf()
-  if (home === null) return json({ error: 'dsh-home-unknown' }, 500)
 
   const archived = registry.archivedSessionIds.includes(sessionId)
-  const facts = await storedFacts(ctx, home, sessionId)
+  const facts = await storedFacts(ctx, sessionId)
   return json({
     sessionId,
     archived,
@@ -188,8 +186,6 @@ async function respondPurge(ctx, request) {
   const sessionId = String(body.sessionId)
   const registry = ctx.get('workspaceRegistry')
   if (!registry) return json({ error: 'workspace-registry-unavailable' }, 503)
-  const home = homeOf()
-  if (home === null) return json({ error: 'dsh-home-unknown' }, 500)
 
   // Archival is the admission rule: only a session the user already archived can
   // lose its log, matching the "separately named, explicitly confirmed" rule of
@@ -198,7 +194,8 @@ async function respondPurge(ctx, request) {
     return json({ error: 'not-archived' }, 409)
   }
 
-  const facts = await storedFacts(ctx, home, sessionId)
+  const facts = await storedFacts(ctx, sessionId)
+  if (facts.home === null) return json({ error: 'dsh-home-unknown' }, 500)
   if (facts.sessionDir === null) {
     // The log is already gone: finish the registry bookkeeping so the archived id
     // does not linger forever.
@@ -215,9 +212,9 @@ async function respondPurge(ctx, request) {
   try {
     result = removeSessionArtifacts({
       sessionId,
-      sessionsRoot: join(home, 'sessions'),
+      sessionsRoot: join(facts.home, 'sessions'),
       sessionDir: facts.sessionDir,
-      projCacheRoot: join(home, 'storages', 'session_projcache', 'sessions'),
+      projCacheRoot: join(facts.home, 'storages', 'session_projcache', 'sessions'),
       projCacheFile: facts.projCacheFile,
     })
   } catch (error) {
@@ -266,27 +263,39 @@ async function settleRegistry(registry, sessionId) {
  * @param sessionId - session being inspected.
  * @returns the slot directory and projection cache file, or nulls when absent.
  */
-async function storedFacts(ctx, home, sessionId) {
+async function storedFacts(ctx, sessionId) {
   const persistence = ctx.get('sessionPersistence')
-  let sessionDir = null
+  let logPath = null
   if (persistence && typeof persistence.stat === 'function') {
     try {
       const snapshot = await persistence.stat(sessionId)
-      sessionDir = sessionDirOf(snapshot?.location?.path)
+      logPath = snapshot?.location?.path ?? null
     } catch {
-      sessionDir = null
+      logPath = null
     }
   }
-  let projCacheFile = projCachePath(home, sessionId)
-  if (!existsSync(projCacheFile)) projCacheFile = null
-  return { sessionDir, projCacheFile }
+  const sessionDir = sessionDirOf(logPath)
+  const home = homeOf(logPath)
+  let projCacheFile = home === null ? null : projCachePath(home, sessionId)
+  if (projCacheFile !== null && !existsSync(projCacheFile)) projCacheFile = null
+  return { sessionDir, projCacheFile, home }
 }
 
-/** DSH home from the environment, with the profile directory as a fallback. */
-function homeOf() {
+/**
+ * DSH home. The desktop Host runs without `DSH_HOME`/`DSH_PROFILE_DIR`, so the
+ * stored log path is the primary source: `<home>/sessions/<key>/session-<id>/`.
+ * @param logPath - stored log path of any session, when known.
+ */
+function homeOf(logPath) {
   if (process.env.DSH_HOME) return process.env.DSH_HOME
   const profileDir = process.env.DSH_PROFILE_DIR
   if (profileDir) return dirname(dirname(profileDir))
+  if (typeof logPath === 'string' && logPath.length > 0) {
+    const candidate = dirname(dirname(dirname(dirname(logPath))))
+    if (existsSync(join(candidate, 'storages'))) return candidate
+  }
+  const fallback = join(homedir(), '.dsh')
+  if (existsSync(join(fallback, 'storages'))) return fallback
   return null
 }
 

@@ -11,7 +11,7 @@ const SESSION_ID = 'session-aaaa'
 const PREFIX = '/plugin/dsh-del-chat/'
 
 /** A Host context stub with just the seam this plugin touches. */
-function harness({ archived = [SESSION_ID], dir = true } = {}) {
+function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-del-chat-host-'))
   const project = join(home, 'sessions', '--D-workspace--')
   const sessionDir = join(project, SESSION_ID)
@@ -68,7 +68,13 @@ function harness({ archived = [SESSION_ID], dir = true } = {}) {
   }
 
   const previous = process.env.DSH_HOME
-  process.env.DSH_HOME = home
+  const previousProfile = process.env.DSH_PROFILE_DIR
+  if (env) {
+    process.env.DSH_HOME = home
+  } else {
+    delete process.env.DSH_HOME
+    delete process.env.DSH_PROFILE_DIR
+  }
   apply(ctx)
   return {
     home,
@@ -78,6 +84,8 @@ function harness({ archived = [SESSION_ID], dir = true } = {}) {
     restore: () => {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
+      if (previousProfile === undefined) delete process.env.DSH_PROFILE_DIR
+      else process.env.DSH_PROFILE_DIR = previousProfile
     },
   }
 }
@@ -147,6 +155,23 @@ test('status reports archived facts without touching disk', async () => {
       projCache: true,
     })
     assert.equal(existsSync(h.sessionDir), true)
+  } finally {
+    h.restore()
+  }
+})
+
+test('resolves the DSH home from the stored log path when no env hint exists', async () => {
+  const h = harness({ env: false })
+  try {
+    const response = await call(h, 'status', { search: `?sessionId=${SESSION_ID}` })
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(readJson(response), {
+      sessionId: SESSION_ID,
+      archived: true,
+      exists: true,
+      bytes: 2048,
+      projCache: true,
+    })
   } finally {
     h.restore()
   }
