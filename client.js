@@ -16,7 +16,10 @@ window.__ModuleLoader__.load({
     const { useEffect, useRef, useState } = React;
     const h = React.createElement;
 
-    const ENDPOINT = '/plugin/dsh-del-chat/';
+    // Document-relative on purpose: both routes live on DSH's authenticated API
+    // channel (`/api/dsh-del-chat/…`), so the browser sends its session cookie and
+    // DSH's Connection layer admits the call before the plugin sees it.
+    const ENDPOINT = 'api/dsh-del-chat/';
 
     const STRINGS = {
       zh: {
@@ -38,6 +41,8 @@ window.__ModuleLoader__.load({
         unknown: '未知错误',
         hostMissing:
           'Host 端插件还没加载，所以没有可调用的删除接口。请完全退出 DSH 再启动一次（刷新页面不够），然后重试。',
+        unauthorized:
+          '这个页面没有通过 DSH 的认证（401）。请从 `dsh web` 打印的带 token 链接重新打开 DSH 再试。',
         bytes: '日志占用',
         cache: '投影缓存',
         session: '会话',
@@ -71,6 +76,8 @@ window.__ModuleLoader__.load({
         unknown: 'unknown error',
         hostMissing:
           'The Host half of this plugin is not loaded, so there is no delete route to call. Quit DSH completely and start it again (a page refresh is not enough), then retry.',
+        unauthorized:
+          'This page is not authenticated with DSH (401). Reopen DSH from the tokenized URL `dsh web` printed, then retry.',
         bytes: 'Log size',
         cache: 'Projection cache',
         session: 'Session',
@@ -221,6 +228,20 @@ window.__ModuleLoader__.load({
       return !type.includes('json');
     }
 
+    /**
+     * DSH's Connection layer refuses a request that is not an authenticated owner:
+     * 401 when the browser has no valid session, 403 when the Peer is not the owner.
+     */
+    function unauthorized(response) {
+      return Boolean(response) && (response.status === 401 || response.status === 403);
+    }
+
+    function describeFailure(response, payload) {
+      if (routeMissing(response)) return TEXT.hostMissing;
+      if (unauthorized(response)) return TEXT.unauthorized;
+      return errorText(payload);
+    }
+
     function errorText(payload) {
       const code = payload && typeof payload.error === 'string' ? payload.error : '';
       if (code in ERROR_TEXT) return ERROR_TEXT[code];
@@ -263,7 +284,7 @@ window.__ModuleLoader__.load({
           const payload = await readJson(response);
           if (!response.ok || payload === null) {
             if (state.sessionId === sessionId) {
-              set({ phase: 'error', error: routeMissing(response) ? TEXT.hostMissing : errorText(payload) });
+              set({ phase: 'error', error: describeFailure(response, payload) });
             }
             return;
           }
@@ -301,7 +322,7 @@ window.__ModuleLoader__.load({
             });
             const payload = await readJson(response);
             if (!response.ok) {
-              if (state.sessionId === sessionId) set({ phase: 'error', error: routeMissing(response) ? TEXT.hostMissing : errorText(payload) });
+              if (state.sessionId === sessionId) set({ phase: 'error', error: describeFailure(response, payload) });
               return;
             }
             if (state.sessionId === sessionId) {

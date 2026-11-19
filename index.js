@@ -4,12 +4,18 @@
  * DSH can hide a Session (archive) but nothing deletes one: the JSONL seam says
  * "Nothing deletes session files ... the seam has no deletion API", and the
  * Workspace registry only drops a session from its account. This plugin adds the
- * separately named, explicitly confirmed destructive step as two same-origin
- * routes:
+ * separately named, explicitly confirmed destructive step as two exact routes on
+ * the *authenticated* API channel:
  *
- *   GET  /plugin/dsh-del-chat/status?sessionId=…  read-only facts for the
- *                                                 confirmation dialog
- *   POST /plugin/dsh-del-chat/purge {sessionId}   delete one *archived* slot
+ *   GET|HEAD /api/dsh-del-chat/status?sessionId=…  read-only facts for the
+ *                                                  confirmation dialog
+ *   POST     /api/dsh-del-chat/purge {sessionId}   delete one *archived* slot
+ *
+ * Both routes go through `connection.fetch`, the seam the in-tree plugins use:
+ * Connection applies its Host/Origin trust checks and browser authentication
+ * before the handler runs, and only an owner Peer reaches an exact route. A
+ * plain `webServer` route would be anonymous, which is why this plugin must not
+ * use one.
  *
  * The registry is never bypassed: the session is detached from its Workspace
  * account through the entity API and unarchived through the registry API, so
@@ -48,14 +54,14 @@ function logLine(line) {
 
 export const name = 'dsh-del-chat'
 
-// Cordis 4 refuses to read a service off the context unless it is declared
-// here: `ctx.webServer` throws "cannot get property ... without inject".
-export const inject = ['webServer']
+// Cordis 4 refuses to read a service off the context unless it is declared here:
+// `ctx.connection` throws "cannot get property ... without inject".
+export const inject = ['connection']
 
 logLine('[module] imported ' + String(import.meta.url))
 
-const PREFIX = '/plugin/dsh-del-chat/'
-const ROUTES = Object.freeze(['status', 'purge'])
+const STATUS_PATH = '/api/dsh-del-chat/status'
+const PURGE_PATH = '/api/dsh-del-chat/purge'
 const MAX_REQUEST_BYTES = 8_192
 const SESSION_ID = /^session-[0-9a-zA-Z._-]{1,128}$/
 const JSON_HEADERS = Object.freeze({
@@ -64,12 +70,13 @@ const JSON_HEADERS = Object.freeze({
 })
 
 /**
- * Register the confirmation-dialog facts route and the purge route.
+ * Register the confirmation-dialog facts route and the purge route on the
+ * authenticated shared API channel.
  *
- * Plain `exact` routes with a node `handler`, matching the route shape the
- * in-tree optional plugins use: resource routes answer GET/HEAD only, while the
- * purge call has to POST a body.
- * @param ctx - Host context carrying the web server.
+ * The handlers receive an already admitted `Request` and return a `Response`:
+ * Connection has applied its trust and authentication policy before dispatch,
+ * so there is no anonymous surface left for a browser page to call.
+ * @param ctx - Host context carrying the Connection service.
  */
 export function apply(ctx) {
   logLine(
@@ -78,23 +85,39 @@ export function apply(ctx) {
       + ' home=' + String(process.env.DSH_HOME),
   )
   try {
-    const server = ctx.webServer
-    logLine('[apply] webServer=' + typeof server)
-    if (!server || typeof server.register !== 'function') {
-      logLine('[apply] no webServer on this context')
+    const connection = ctx.connection
+    logLine('[apply] connection=' + typeof connection)
+    if (!connection || typeof connection.fetch?.register !== 'function') {
+      logLine('[apply] no connection.fetch on this context')
       return
     }
-    for (const action of ROUTES) {
-      const path = PREFIX + action
-      const dispose = server.register({
-        kind: 'exact',
-        path,
-        handler: (request, response) => {
-          void serve(ctx, action, request, response)
-        },
-      })
-      logLine('[apply] route registered ' + path)
-      ctx.effect(() => dispose, 'dsh-del-chat: ' + action)
+    // Registration returns an async disposer; tie it to this fiber so a plugin
+    // reload (disable → enable) re-registers cleanly instead of colliding with the
+    // previous registration.
+    const disposers = []
+    try {
+      disposers.push(connection.fetch.register({
+        path: STATUS_PATH,
+        methods: ['GET', 'HEAD'],
+        requestBody: 'buffered',
+        fetch: async (request) => headless(request, await statusResponse(ctx, request)),
+      }))
+      logLine('[apply] route registered ' + STATUS_PATH)
+      disposers.push(connection.fetch.register({
+        path: PURGE_PATH,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request) => purgeResponse(ctx, request),
+      }))
+      logLine('[apply] route registered ' + PURGE_PATH)
+    } finally {
+      ctx.effect(() => () => {
+        for (const dispose of disposers) {
+          Promise.resolve()
+            .then(() => dispose())
+            .catch((error) => logLine('[apply] route dispose failed: ' + describe(error)))
+        }
+      }, 'dsh-del-chat: routes')
     }
     ctx.effect(() => ctx.on('session/disposed', (session) => {
       const disposed = String(session?.id ?? '')
@@ -111,78 +134,40 @@ export function apply(ctx) {
   }
 }
 
-/** Bridge one node request/response pair onto the Web handler. */
-async function serve(ctx, action, request, response) {
-  logLine('[hit] ' + request.method + ' ' + action)
-  try {
-    const web = await toWebRequest(request, response)
-    if (web === null) return
-    const result = action === 'purge'
-      ? await respondPurge(ctx, web)
-      : await respondStatus(ctx, web)
-    await writeResponse(response, result)
-  } catch (error) {
-    logLine('[serve] failed ' + action + ': ' + describe(error))
-    try {
-      await writeResponse(response, json({ error: 'internal', message: describe(error) }, 500))
-    } catch {
-      // The socket may already be gone.
-    }
-  }
-}
-
-async function toWebRequest(request, response) {
-  const headers = new Headers()
-  for (const [key, value] of Object.entries(request.headers ?? {})) {
-    if (typeof value === 'string') headers.set(key, value)
-    else if (Array.isArray(value)) headers.set(key, value.join(', '))
-  }
-  let body
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    const chunks = []
-    let size = 0
-    for await (const chunk of request) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      size += buffer.length
-      if (size > MAX_REQUEST_BYTES) {
-        await writeResponse(response, json({ error: 'payload-too-large' }, 413))
-        return null
-      }
-      chunks.push(buffer)
-    }
-    if (chunks.length > 0) body = Buffer.concat(chunks)
-  }
-  const url = new URL(request.url ?? PREFIX, 'http://127.0.0.1')
-  return new Request(url, { method: request.method ?? 'GET', headers, body })
-}
-
-async function writeResponse(response, result) {
-  const headers = {}
-  result.headers.forEach((value, key) => {
-    headers[key] = value
-  })
-  response.writeHead(result.status, headers)
-  response.end(await result.text())
+/**
+ * Answer a HEAD probe without a body, so the dialog can ask for facts cheaply.
+ * @param request - the admitted request.
+ * @param response - the response built for GET.
+ */
+async function headless(request, response) {
+  if (request.method !== 'HEAD') return response
+  await response.body?.cancel()
+  return new Response(null, { status: response.status, headers: response.headers })
 }
 
 /** Read-only facts the dialog needs before it offers the destructive action. */
-async function respondStatus(ctx, request) {
-  if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD')
-  const sessionId = new URL(request.url).searchParams.get('sessionId') ?? ''
-  if (!SESSION_ID.test(sessionId)) return json({ error: 'invalid-session-id' }, 400)
-  const registry = ctx.get('workspaceRegistry')
-  if (!registry) return json({ error: 'workspace-registry-unavailable' }, 503)
+async function statusResponse(ctx, request) {
+  logLine('[hit] ' + request.method + ' status')
+  try {
+    const sessionId = new URL(request.url).searchParams.get('sessionId') ?? ''
+    if (!SESSION_ID.test(sessionId)) return json({ error: 'invalid-session-id' }, 400)
+    const registry = ctx.get('workspaceRegistry')
+    if (!registry) return json({ error: 'workspace-registry-unavailable' }, 503)
 
-  const archived = registry.archivedSessionIds.includes(sessionId)
-  const facts = await storedFacts(ctx, sessionId)
-  return json({
-    sessionId,
-    archived,
-    exists: facts.sessionDir !== null,
-    bytes: facts.sessionDir === null ? 0 : measureDirectory(facts.sessionDir),
-    projCache: facts.projCacheFile !== null,
-    ...await diagnostics(ctx, sessionId),
-  })
+    const archived = registry.archivedSessionIds.includes(sessionId)
+    const facts = await storedFacts(ctx, sessionId)
+    return json({
+      sessionId,
+      archived,
+      exists: facts.sessionDir !== null,
+      bytes: facts.sessionDir === null ? 0 : measureDirectory(facts.sessionDir),
+      projCache: facts.projCacheFile !== null,
+      ...await diagnostics(ctx, sessionId),
+    })
+  } catch (error) {
+    logLine('[status] failed: ' + describe(error))
+    return json({ error: 'internal', message: describe(error) }, 500)
+  }
 }
 
 /**
@@ -220,84 +205,89 @@ async function diagnostics(ctx, sessionId) {
 }
 
 /** Delete one archived session after every safety check passed. */
-async function respondPurge(ctx, request) {
-  if (request.method !== 'POST') return methodNotAllowed('POST')
-  const body = await readJson(request)
-  if (body === null || !SESSION_ID.test(String(body.sessionId ?? ''))) {
-    return json({ error: 'invalid-session-id' }, 400)
-  }
-  const sessionId = String(body.sessionId)
-  const registry = ctx.get('workspaceRegistry')
-  if (!registry) return json({ error: 'workspace-registry-unavailable' }, 503)
-
-  // Archival is the admission rule: only a session the user already archived can
-  // lose its log, matching the "separately named, explicitly confirmed" rule of
-  // the Workspace package.
-  if (!registry.archivedSessionIds.includes(sessionId)) {
-    return json({ error: 'not-archived' }, 409)
-  }
-
-  logLine('[purge] start ' + sessionId)
-  const facts = await storedFacts(ctx, sessionId)
-  if (facts.home === null) {
-    logLine('[purge] no dsh home for ' + sessionId)
-    return json({ error: 'dsh-home-unknown' }, 500)
-  }
-  if (facts.sessionDir === null) {
-    // The log is already gone: finish the registry bookkeeping so the archived id
-    // does not linger forever, and drop any stale row a Client still holds.
-    const held = isResident(ctx, sessionId)
-    if (!held) await settleRegistry(registry, sessionId)
-    broadcastRemoved(ctx, sessionId)
-    return json({ ok: true, bytes: 0, removed: ['registry-only'], settled: !held })
-  }
-
-  // Delete first, then settle the registry. A failed unlink must leave the Session
-  // exactly as the user found it — still archived, still in its workspace group —
-  // so the menu item is still there to retry. Settling first would move the row to
-  // Ungrouped and clear the archive mark, and the row would no longer offer a retry.
-  let result
+async function purgeResponse(ctx, request) {
+  logLine('[hit] POST purge')
   try {
-    result = removeSessionArtifacts({
-      sessionId,
-      sessionsRoot: join(facts.home, 'sessions'),
-      sessionDir: facts.sessionDir,
-      projCacheRoot: join(facts.home, 'storages', 'session_projcache', 'sessions'),
-      projCacheFile: facts.projCacheFile,
+    const body = await readJson(request)
+    if (body === null || !SESSION_ID.test(String(body.sessionId ?? ''))) {
+      return json({ error: 'invalid-session-id' }, 400)
+    }
+    const sessionId = String(body.sessionId)
+    const registry = ctx.get('workspaceRegistry')
+    if (!registry) return json({ error: 'workspace-registry-unavailable' }, 503)
+
+    // Archival is the admission rule: only a session the user already archived can
+    // lose its log, matching the "separately named, explicitly confirmed" rule of
+    // the Workspace package.
+    if (!registry.archivedSessionIds.includes(sessionId)) {
+      return json({ error: 'not-archived' }, 409)
+    }
+
+    logLine('[purge] start ' + sessionId)
+    const facts = await storedFacts(ctx, sessionId)
+    if (facts.home === null) {
+      logLine('[purge] no dsh home for ' + sessionId)
+      return json({ error: 'dsh-home-unknown' }, 500)
+    }
+    if (facts.sessionDir === null) {
+      // The log is already gone: finish the registry bookkeeping so the archived id
+      // does not linger forever, and drop any stale row a Client still holds.
+      const held = isResident(ctx, sessionId)
+      if (!held) await settleRegistry(registry, sessionId)
+      broadcastRemoved(ctx, sessionId)
+      return json({ ok: true, bytes: 0, removed: ['registry-only'], settled: !held })
+    }
+
+    // Delete first, then settle the registry. A failed unlink must leave the Session
+    // exactly as the user found it — still archived, still in its workspace group —
+    // so the menu item is still there to retry. Settling first would move the row to
+    // Ungrouped and clear the archive mark, and the row would no longer offer a retry.
+    let result
+    try {
+      result = removeSessionArtifacts({
+        sessionId,
+        sessionsRoot: join(facts.home, 'sessions'),
+        sessionDir: facts.sessionDir,
+        projCacheRoot: join(facts.home, 'storages', 'session_projcache', 'sessions'),
+        projCacheFile: facts.projCacheFile,
+      })
+    } catch (error) {
+      const message = describe(error)
+      logLine('[purge] failed ' + sessionId + ': ' + message)
+      if (/EBUSY|EPERM|ENOTEMPTY/i.test(message)) {
+        return json({ error: 'log-locked', message }, 423)
+      }
+      return json({ error: 'delete-failed', message }, 500)
+    }
+    logLine('[purge] done ' + sessionId + ' bytes=' + String(result.bytes) + ' removed=' + result.removed.join(',') + ' skipped=' + result.skipped.join(','))
+    // The bytes are already gone; a registry failure here must not turn a successful
+    // delete into an error the user would retry against missing files.
+    const held = isResident(ctx, sessionId)
+    if (held) {
+      // The Host still holds this Session in memory, so its cataloged row survives the
+      // delete. Settling now would detach it and clear the archive mark, and the Client
+      // would render the ghost as an Ungrouped row on its next list read. Keep both
+      // marks until `session/disposed` reports the Host actually let go, then settle.
+      logLine('[purge] still resident, registry settles when the host releases it')
+    } else {
+      try {
+        await settleRegistry(registry, sessionId)
+      } catch (error) {
+        logLine('[purge] registry settle failed ' + sessionId + ': ' + describe(error))
+      }
+    }
+    broadcastRemoved(ctx, sessionId)
+    return json({
+      ok: true,
+      bytes: result.bytes,
+      removed: result.removed,
+      skipped: result.skipped,
+      settled: !held,
     })
   } catch (error) {
-    const message = describe(error)
-    logLine('[purge] failed ' + sessionId + ': ' + message)
-    if (/EBUSY|EPERM|ENOTEMPTY/i.test(message)) {
-      return json({ error: 'log-locked', message }, 423)
-    }
-    return json({ error: 'delete-failed', message }, 500)
+    logLine('[purge] threw: ' + describe(error) + ' | stack: ' + String(error && error.stack))
+    return json({ error: 'internal', message: describe(error) }, 500)
   }
-  logLine('[purge] done ' + sessionId + ' bytes=' + String(result.bytes) + ' removed=' + result.removed.join(',') + ' skipped=' + result.skipped.join(','))
-  // The bytes are already gone; a registry failure here must not turn a successful
-  // delete into an error the user would retry against missing files.
-  const held = isResident(ctx, sessionId)
-  if (held) {
-    // The Host still holds this Session in memory, so its cataloged row survives the
-    // delete. Settling now would detach it and clear the archive mark, and the Client
-    // would render the ghost as an Ungrouped row on its next list read. Keep both
-    // marks until `session/disposed` reports the Host actually let go, then settle.
-    logLine('[purge] still resident, registry settles when the host releases it')
-  } else {
-    try {
-      await settleRegistry(registry, sessionId)
-    } catch (error) {
-      logLine('[purge] registry settle failed ' + sessionId + ': ' + describe(error))
-    }
-  }
-  broadcastRemoved(ctx, sessionId)
-  return json({
-    ok: true,
-    bytes: result.bytes,
-    removed: result.removed,
-    skipped: result.skipped,
-    settled: !held,
-  })
 }
 
 /**
@@ -416,9 +406,8 @@ async function settleRegistry(registry, sessionId) {
  * Where the stored artifacts of one session live, according to the persistence
  * backend rather than a guessed path layout.
  * @param ctx - Host context.
- * @param home - DSH home directory.
  * @param sessionId - session being inspected.
- * @returns the slot directory and projection cache file, or nulls when absent.
+ * @returns the slot directory, projection cache file and DSH home, or nulls.
  */
 async function storedFacts(ctx, sessionId) {
   const persistence = ctx.get('sessionPersistence')
@@ -465,10 +454,6 @@ async function readJson(request) {
   } catch {
     return null
   }
-}
-
-function methodNotAllowed(allow) {
-  return json({ error: 'method-not-allowed' }, 405, { allow })
 }
 
 function json(body, status = 200, extraHeaders = {}) {

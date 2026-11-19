@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
 import test from 'node:test'
 
 import { apply } from '../index.js'
 
 const SESSION_ID = 'session-aaaa'
-const PREFIX = '/plugin/dsh-del-chat/'
+const STATUS_PATH = '/api/dsh-del-chat/status'
+const PURGE_PATH = '/api/dsh-del-chat/purge'
+const ORIGIN = 'http://127.0.0.1:3080'
 
 /** A Host context stub with just the seam this plugin touches. */
 function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
@@ -64,10 +65,14 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
     emit(event, sessionId) {
       calls.events.push([event, sessionId])
     },
-    webServer: {
-      register(spec) {
-        calls.routes.push(spec)
-        return () => {}
+    // The authenticated seam: Connection admits the request before dispatch, so the
+    // plugin only ever sees admitted Requests and returns Responses.
+    connection: {
+      fetch: {
+        register(spec) {
+          calls.routes.push(spec)
+          return async () => {}
+        },
       },
     },
     get(name) {
@@ -106,51 +111,26 @@ function harness({ archived = [SESSION_ID], dir = true, env = true } = {}) {
   }
 }
 
-/**
- * Drive one registered node `handler` route the way the Host web server does and
- * collect the response it writes.
- */
-function call(h, action, { method = 'GET', body, search = '' } = {}) {
-  const spec = h.calls.routes.find((route) => route.path === PREFIX + action)
-  assert.ok(spec, `no route registered for ${PREFIX}${action}`)
-  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
-  const request = Readable.from(chunks)
-  request.method = method
-  request.url = PREFIX + action + search
-  request.headers = { 'content-type': 'application/json' }
-
-  let settle
-  const done = new Promise((resolve) => {
-    settle = resolve
-  })
-  const response = {
-    statusCode: 0,
-    headers: {},
-    text: '',
-    writeHead(status, headers) {
-      this.statusCode = status
-      this.headers = headers ?? {}
-    },
-    end(chunk) {
-      this.text = chunk === undefined ? '' : String(chunk)
-      settle(this)
-      return this
-    },
-  }
-  spec.handler(request, response)
-  return done
+/** Drive one registered Fetch route the way Connection does after admission. */
+function call(h, path, { method = 'GET', body, search = '' } = {}) {
+  const spec = h.calls.routes.find((route) => route.path === path)
+  assert.ok(spec, `no route registered for ${path}`)
+  assert.ok(spec.methods.includes(method), `${path} does not own ${method}`)
+  const init = { method, headers: { 'content-type': 'application/json' } }
+  if (body !== undefined) init.body = JSON.stringify(body)
+  return spec.fetch(new Request(ORIGIN + path + search, init))
 }
 
-const readJson = (response) => JSON.parse(response.text)
+const bodyOf = (response) => response.json()
 
-test('registers one exact handler route per action', () => {
+test('registers both routes on the authenticated API channel', () => {
   const h = harness()
   try {
     assert.deepEqual(
-      h.calls.routes.map((route) => [route.kind, route.path, typeof route.handler]),
+      h.calls.routes.map((route) => [route.path, route.methods.join(','), route.requestBody, typeof route.fetch]),
       [
-        ['exact', `${PREFIX}status`, 'function'],
-        ['exact', `${PREFIX}purge`, 'function'],
+        [STATUS_PATH, 'GET,HEAD', 'buffered', 'function'],
+        [PURGE_PATH, 'POST', 'buffered', 'function'],
       ],
     )
   } finally {
@@ -161,9 +141,9 @@ test('registers one exact handler route per action', () => {
 test('status reports archived facts without touching disk', async () => {
   const h = harness()
   try {
-    const response = await call(h, 'status', { search: `?sessionId=${SESSION_ID}` })
-    assert.equal(response.statusCode, 200)
-    assert.deepEqual(readJson(response), {
+    const response = await call(h, STATUS_PATH, { search: `?sessionId=${SESSION_ID}` })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await bodyOf(response), {
       sessionId: SESSION_ID,
       archived: true,
       exists: true,
@@ -177,12 +157,23 @@ test('status reports archived facts without touching disk', async () => {
   }
 })
 
+test('status answers a HEAD probe without a body', async () => {
+  const h = harness()
+  try {
+    const response = await call(h, STATUS_PATH, { method: 'HEAD', search: `?sessionId=${SESSION_ID}` })
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), '')
+  } finally {
+    h.restore()
+  }
+})
+
 test('resolves the DSH home from the stored log path when no env hint exists', async () => {
   const h = harness({ env: false })
   try {
-    const response = await call(h, 'status', { search: `?sessionId=${SESSION_ID}` })
-    assert.equal(response.statusCode, 200)
-    assert.deepEqual(readJson(response), {
+    const response = await call(h, STATUS_PATH, { search: `?sessionId=${SESSION_ID}` })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await bodyOf(response), {
       sessionId: SESSION_ID,
       archived: true,
       exists: true,
@@ -198,9 +189,9 @@ test('resolves the DSH home from the stored log path when no env hint exists', a
 test('status rejects a malformed session id', async () => {
   const h = harness()
   try {
-    const response = await call(h, 'status', { search: '?sessionId=../etc' })
-    assert.equal(response.statusCode, 400)
-    assert.equal(readJson(response).error, 'invalid-session-id')
+    const response = await call(h, STATUS_PATH, { search: '?sessionId=../etc' })
+    assert.equal(response.status, 400)
+    assert.equal((await bodyOf(response)).error, 'invalid-session-id')
   } finally {
     h.restore()
   }
@@ -209,9 +200,9 @@ test('status rejects a malformed session id', async () => {
 test('purge refuses a session that was never archived', async () => {
   const h = harness({ archived: [] })
   try {
-    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
-    assert.equal(response.statusCode, 409)
-    assert.equal(readJson(response).error, 'not-archived')
+    const response = await call(h, PURGE_PATH, { method: 'POST', body: { sessionId: SESSION_ID } })
+    assert.equal(response.status, 409)
+    assert.equal((await bodyOf(response)).error, 'not-archived')
     assert.equal(existsSync(h.sessionDir), true)
     assert.deepEqual(h.calls.detach, [])
     assert.deepEqual(h.calls.events, [])
@@ -223,9 +214,9 @@ test('purge refuses a session that was never archived', async () => {
 test('purge deletes the slot and its projection cache, settles the registry, then tells Clients', async () => {
   const h = harness()
   try {
-    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
-    const body = readJson(response)
-    assert.equal(response.statusCode, 200)
+    const response = await call(h, PURGE_PATH, { method: 'POST', body: { sessionId: SESSION_ID } })
+    const body = await bodyOf(response)
+    assert.equal(response.status, 200)
     assert.equal(body.ok, true)
     assert.equal(body.bytes, 2048)
     assert.deepEqual(body.removed, ['session-log', 'projection-cache'])
@@ -249,9 +240,9 @@ test('purge on a session whose log is already gone only settles the registry', a
     h.archive(SESSION_ID)
     h.calls.unarchive.length = 0
     h.calls.events.length = 0
-    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
-    const body = readJson(response)
-    assert.equal(response.statusCode, 200)
+    const response = await call(h, PURGE_PATH, { method: 'POST', body: { sessionId: SESSION_ID } })
+    const body = await bodyOf(response)
+    assert.equal(response.status, 200)
     assert.deepEqual(body.removed, ['registry-only'])
     assert.deepEqual(h.calls.unarchive, [SESSION_ID])
     assert.deepEqual(h.calls.events, [['api-session/removed', SESSION_ID]])
@@ -264,9 +255,9 @@ test('purge leaves the registry alone while the Host still holds the Session', a
   const h = harness()
   try {
     h.calls.resident.add(SESSION_ID)
-    const response = await call(h, 'purge', { method: 'POST', body: { sessionId: SESSION_ID } })
-    const body = readJson(response)
-    assert.equal(response.statusCode, 200)
+    const response = await call(h, PURGE_PATH, { method: 'POST', body: { sessionId: SESSION_ID } })
+    const body = await bodyOf(response)
+    assert.equal(response.status, 200)
     assert.equal(body.settled, false)
     assert.equal(existsSync(h.sessionDir), false)
     // The Session stays archived and attached, so the Client redraws it in its own
@@ -305,12 +296,11 @@ test('the start sweep settles an archived Session whose log is gone', async () =
   }
 })
 
-test('purge rejects GET', async () => {
+test('purge is not registered for GET, so Connection never admits one', () => {
   const h = harness()
   try {
-    const response = await call(h, 'purge', { search: `?sessionId=${SESSION_ID}` })
-    assert.equal(response.statusCode, 405)
-    assert.equal(readJson(response).error, 'method-not-allowed')
+    const spec = h.calls.routes.find((route) => route.path === PURGE_PATH)
+    assert.deepEqual(spec.methods, ['POST'])
   } finally {
     h.restore()
   }

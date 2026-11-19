@@ -35,7 +35,7 @@ for (const entry of Object.values(manifest.exports)) {
 
 const host = await import('../index.js')
 assert.equal(host.name, 'dsh-del-chat')
-assert.deepEqual(host.inject, ['webServer'], 'the plugin declares the web server it reads')
+assert.deepEqual(host.inject, ['connection'], 'the plugin declares the authenticated Connection it registers on')
 assert.equal(typeof host.apply, 'function')
 
 const core = await import('../purge-core.js')
@@ -54,8 +54,9 @@ const client = read('client.js')
 assert.match(client, /window\.__ModuleLoader__\.load\(\{/)
 assert.match(client, /id: 'dsh-del-chat'/)
 assert.match(client, /target: 'session'/)
-assert.match(client, /'\/plugin\/dsh-del-chat\/'/)
+assert.match(client, /'api\/dsh-del-chat\/'/, 'client must call the authenticated API channel')
 assert.ok(client.includes("name: 'shell.overlay'"), 'client must register the overlay dialog')
+assert.ok(!client.includes("'/plugin/"), 'no anonymous webServer route may remain on the client')
 assert.match(client, /sessions\.refresh\(\)/, 'client must refresh the Session catalog after a purge')
 
 for (const language of ['zh', 'en']) {

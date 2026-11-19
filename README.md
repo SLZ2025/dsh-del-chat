@@ -104,8 +104,13 @@ See [`docs/DETAIL.md`](docs/DETAIL.md) for the reasoning, the guard table and th
 known costs. In short: the client half registers a data-only menu contribution for
 `session` (it asks the status route once when the menu opens, and only offers the
 item for an archived Session) plus one `shell.overlay` dialog; the Host half
-exposes `GET /plugin/dsh-del-chat/status` and `POST /plugin/dsh-del-chat/purge`,
-checks that the id is archived and that the slot directory really is that Session's
+registers two exact routes on DSH's **authenticated** API channel through
+`ctx.connection.fetch` — `GET|HEAD /api/dsh-del-chat/status` and
+`POST /api/dsh-del-chat/purge`. Connection applies its `Host`/`Origin` trust checks
+and browser authentication before the handler runs, and only an owner Peer reaches
+an exact route, so an unauthenticated page gets 401 and any other Peer gets 403
+instead of a delete. The route then checks that the id is archived and that the slot
+directory really is that Session's
 slot under the persistence root, then deletes. It detaches and unarchives only when
 the Host has already released the Session; while the Session is still resident in
 the Host's in-memory store (a plugin cannot drop that entry) the delete keeps the

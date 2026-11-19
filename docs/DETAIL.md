@@ -26,8 +26,8 @@ can no longer be opened, so the header menu could never reach it.
 ```
 Sidebar Session context menu (target: 'session')
    └─ Delete archive ──> shell.overlay confirmation dialog
-                              (first GET /plugin/dsh-del-chat/status)
-                                   └─ confirm ──> POST /plugin/dsh-del-chat/purge
+                              (first GET|HEAD /api/dsh-del-chat/status)
+                                   └─ confirm ──> POST /api/dsh-del-chat/purge
                                         ├─ guard: must be archived
                                         ├─ rm -rf <home>/sessions/*/session-<id>/
                                         ├─ rm    <home>/storages/session_projcache/sessions/<id>.json
@@ -77,7 +77,8 @@ Sidebar Session context menu (target: 'session')
 | --- | --- |
 | Menu item | only for an archived Session (`target: 'session'`, decided by one read-only `/status` call when the menu opens); `danger: true` plus a separator |
 | Dialog | shows Session id, log size and whether a projection cache exists; confirm is disabled for a Session that is not archived |
-| `GET /status` | read-only; returns `archived / exists / bytes / projCache` |
+| Admission | both routes live on DSH's authenticated API channel (`ctx.connection.fetch`): `Host`/`Origin` trust and browser authentication are checked before the handler runs, an unauthenticated page gets `401` and a non-owner Peer `403` |
+| `GET|HEAD /status` | read-only; returns `archived / exists / bytes / projCache` |
 | `POST /purge` | Session-id allow-list regex; the id must be in the archive set |
 | `assertSessionDir` | the slot directory name must **equal** the Session id and must sit under the persistence root (`isInside`) |
 | Delete timing | `rmSync` runs only after every check passed, so a refusal leaves the disk untouched |
@@ -99,8 +100,8 @@ Sidebar Session context menu (target: 'session')
 - `purge-core.js` — pure filesystem helpers (`isInside / assertSessionDir /
   measureDirectory / removeSessionArtifacts / projCachePath / sessionDirOf`),
   no context dependency, unit-tested.
-- `index.js` — Host half: `GET /plugin/dsh-del-chat/status`,
-  `POST /plugin/dsh-del-chat/purge`.
+- `index.js` — Host half: `GET|HEAD /api/dsh-del-chat/status`,
+  `POST /api/dsh-del-chat/purge`. Both are registered through `ctx.connection.fetch`, so Connection applies its trust and authentication policy and only an owner Peer reaches them.
 - `client.js` — client half: the menu item and the confirmation dialog.
 - `test/*.mjs` — `node test/purge-core.test.mjs`, `node test/host-routes.test.mjs`,
   `node test/smoke.mjs`.
@@ -126,8 +127,8 @@ sessions from grouping without deleting their histories」。
 
 ```
 侧栏会话右键菜单（target: 'session'）
-   └─ 删除归档 ──> 确认弹窗（先 GET /plugin/dsh-del-chat/status 拿事实）
-                        └─ 确认 ──> POST /plugin/dsh-del-chat/purge
+   └─ 删除归档 ──> 确认弹窗（先 GET|HEAD /api/dsh-del-chat/status 拿事实）
+                        └─ 确认 ──> POST /api/dsh-del-chat/purge
                              ├─ 校验：必须已归档
                              ├─ rm -rf <home>/sessions/*/session-<id>/
                              ├─ rm    <home>/storages/session_projcache/sessions/<id>.json
@@ -149,6 +150,10 @@ sessions from grouping without deleting their histories」。
   删失败时会话仍处于归档态、仍留在原工作区，菜单项还在，用户可以重试。之后
   `detachSession` / `unarchiveSession` 走 `workspace`
   domain 自己的写链，持久化与 follow feed 由内核负责；插件不手改 JSON。
+- **只接受认证的调用**：两条路由都注册在 DSH 的认证 API 通道上（`ctx.connection.fetch`，路径
+  `/api/dsh-del-chat/…`）。Connection 在 handler 之前校验 `Host`/`Origin` 信任与浏览器认证，
+  只有 owner Peer 能到达 exact 路由：未认证页面得到 401、非 owner Peer 得到 403。插件不再
+  暴露匿名端点，所以任何一个网页都无法直接请求删除。
 - **只删两处**：会话日志槽与投影缓存槽。附件是内容寻址且跨会话共享去重，没有
   session→attachment 映射，永远不删；spill 溢出文件在系统临时目录、由启动 sweep
   自清，也不碰。

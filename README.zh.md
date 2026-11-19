@@ -92,9 +92,11 @@ $DSH_HOME/storages/cost-meter/ledger.json                              保留（
 
 见 [`docs/DETAIL.md`](docs/DETAIL.md)：设计取舍、防线表与已知代价。简述：客户端注册一条
 针对 `session` 的纯数据菜单贡献（打开菜单时先问一次状态，只有已归档才出现），外加一个
-`shell.overlay` 弹窗；Host 侧暴露
-`GET /plugin/dsh-del-chat/status` 与 `POST /plugin/dsh-del-chat/purge`，先确认该 id 已归档、
-槽目录名确实等于会话 id 且在持久化根内，再 detach、unarchive、删文件。
+`shell.overlay` 弹窗；Host 侧通过 `ctx.connection.fetch` 在 DSH 的**认证** API 通道上注册
+两条 exact 路由——`GET|HEAD /api/dsh-del-chat/status` 与 `POST /api/dsh-del-chat/purge`。
+Connection 会在 handler 之前做 `Host`/`Origin` 信任检查与浏览器认证，只有 owner Peer 能
+到达 exact 路由：未认证的页面得到 401，非 owner 得到 403，都没有删除能力。随后才确认该 id
+已归档、槽目录名确实等于会话 id 且在持久化根内，再 detach、unarchive、删文件。
 
 ## 常见问题
 
